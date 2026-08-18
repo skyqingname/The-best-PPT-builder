@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f6f7f8;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --line: #e5e5e5;
+  --panel: #f7f7f9;
+  --card: #ffffff;
+  --blue: #0b84ff;
+}
+
+html,
+body {
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+.serif {
+  font-family: "Source Serif 4", "Songti SC", serif;
+}
+
+.custom-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: #d4d4d8;
+  border-radius: 99px;
+}
