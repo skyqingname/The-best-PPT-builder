@@ -2,8 +2,6 @@
 
 本地单用户的 PPT Agent 网站。输入一句话，自动跑完调研、假设、大纲便利贴、页级检索、策划稿、设计稿，并导出 PPTX。
 
-按 [Sandun 在 linux.do 公开的思路](https://linux.do/t/topic/1782304) 复刻主链路。**与 SANDUN 官方产品无关**，不是 https://sandun.cc/ 的官方仓库。
-
 ## 本地运行
 
 需要 Node.js 20+。
