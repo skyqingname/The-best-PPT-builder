@@ -1,7 +1,11 @@
 import { buildPptx } from "@/lib/export-pptx";
+import { auditProjectArtifacts } from "@/lib/pipeline";
 import { getProject, listPages } from "@/lib/store";
 
 export const runtime = "nodejs";
+
+const exportCache = new Map<string, { version: string; buffer: Buffer }>();
+const EXPORT_CACHE_LIMIT = 8;
 
 export async function GET(
   _request: Request,
@@ -9,6 +13,7 @@ export async function GET(
 ) {
   const { id } = await context.params;
   try {
+    auditProjectArtifacts(id);
     const project = getProject(id);
     const pages = listPages(id);
     const incomplete = pages.filter(
@@ -25,7 +30,19 @@ export async function GET(
       );
     }
     const svgs = pages.map((page) => page.design_svg);
-    const buffer = await buildPptx(svgs);
+    const version = pages.map((page) => page.updated_at).join("|");
+    const cached = exportCache.get(id);
+    const buffer = cached?.version === version
+      ? cached.buffer
+      : await buildPptx(svgs);
+    if (!cached || cached.version !== version) {
+      exportCache.set(id, { version, buffer });
+      while (exportCache.size > EXPORT_CACHE_LIMIT) {
+        const oldest = exportCache.keys().next().value;
+        if (!oldest) break;
+        exportCache.delete(oldest);
+      }
+    }
     const filename = `${project.title || "ppt-agent"}.pptx`.replace(/[\\/:*?"<>|]/g, "_");
     return new Response(new Uint8Array(buffer), {
       headers: {

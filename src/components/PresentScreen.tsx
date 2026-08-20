@@ -33,6 +33,9 @@ export default function PresentScreen({ projectId }: { projectId: string }) {
 
   const page = project?.pages[index];
   const svg = page?.designSvg || page?.draftSvg;
+  const [renderFailed, setRenderFailed] = useState(false);
+
+  useEffect(() => setRenderFailed(false), [svg]);
 
   return (
     <div className="flex h-dvh flex-col bg-black text-white">
@@ -43,12 +46,15 @@ export default function PresentScreen({ projectId }: { projectId: string }) {
         </div>
       </div>
       <div className="flex flex-1 items-center justify-center px-8 pb-8">
-        {svg ? (
+        {svg && !renderFailed ? (
           <img
             alt=""
             className="max-h-full max-w-full"
             src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`}
+            onError={() => setRenderFailed(true)}
           />
+        ) : renderFailed ? (
+          <div className="text-white/55">这页稿件无法渲染，请返回工作台继续修复</div>
         ) : (
           <div className="text-white/40">这一页还没有稿</div>
         )}

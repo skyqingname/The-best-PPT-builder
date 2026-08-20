@@ -8,7 +8,7 @@
 - `src/components/`：客户端界面组件。
 - `src/lib/`：流水线、存储、模型、搜索、导出等领域逻辑。
 - `tests/`：不访问真实模型、搜索服务或用户数据库的回归测试。
-- `data/`：本机 SQLite 数据，仅保留 `.gitkeep`；数据库、WAL 和密钥不得提交。
+- `data/`：本机 SQLite 与项目产物。`data/artifacts/<projectId>/` 存放 Deck Plan、参考稿分析和版本化上传文件；仓库仅保留 `.gitkeep`，数据库、WAL、上传文件、产物与密钥不得提交。
 - `output/playwright/`：浏览器视觉 QA 的临时截图与追踪文件；不得提交，验收后可由用户决定是否清理。
 - `docs/`：需要独立维护的架构、接口或运维文档；没有实际读者需求时不创建空文档。
 

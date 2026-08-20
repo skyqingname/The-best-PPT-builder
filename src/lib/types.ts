@@ -9,12 +9,14 @@ export type ProjectStage =
   | "requirements"
   | "outline"
   | "research"
+  | "planning"
   | "draft"
+  | "style_reference"
   | "design"
   | "done"
   | "failed";
 
-export type PageType = "cover" | "toc" | "content" | "end";
+export type PageType = "cover" | "toc" | "section" | "content" | "end";
 
 export type ArtifactStatus =
   | "empty"
@@ -52,6 +54,114 @@ export interface ProjectAssumptions {
   purpose: string;
   styleId: string;
   questions: AssumptionQuestion[];
+}
+
+export type VisualSlotKind =
+  | "diagram"
+  | "chart"
+  | "svg_illustration"
+  | "photo"
+  | "none";
+
+export interface VisualSlotPlan {
+  kind: VisualSlotKind;
+  purpose: string;
+  placement: string;
+  aspectRatio: string;
+  query: string;
+  fallback: string;
+}
+
+export interface DeckVisualSystem {
+  concept: string;
+  canvas: string;
+  grid: string;
+  margins: string;
+  titleSystem: string;
+  typography: string;
+  palette: string[];
+  cardSystem: string;
+  graphicLanguage: string;
+  consistencyRules: string[];
+}
+
+export interface DeckPagePlan {
+  pageCode: string;
+  pageType: PageType;
+  title: string;
+  objective: string;
+  layout: string;
+  hierarchy: string[];
+  readingOrder: string[];
+  visualSlots: VisualSlotPlan[];
+}
+
+export interface DeckPlan {
+  version: 1;
+  status: "ready" | "stale";
+  generatedAt: string;
+  outlineFingerprint: string;
+  shared: DeckVisualSystem;
+  pages: DeckPagePlan[];
+}
+
+export interface ReferenceStyleProfile {
+  name: string;
+  summary: string;
+  palette: string[];
+  typography: string;
+  background: string;
+  titleSystem: string;
+  cardSystem: string;
+  imageTreatment: string;
+  chartStyle: string;
+  density: string;
+  pageArchetypes: Array<{
+    page: string;
+    use: string;
+    layout: string;
+    imageRole: string;
+  }>;
+  do: string[];
+  dont: string[];
+}
+
+export interface DesignReferenceState {
+  status: "pending" | "processing" | "ready" | "confirmed" | "failed";
+  mode: "preset" | "upload";
+  styleId: string;
+  colorPreference: string;
+  uploadId: string;
+  fileName: string;
+  fileType: "ppt" | "pptx" | "pdf" | "";
+  pageCount: number;
+  profile: ReferenceStyleProfile | null;
+  error: string;
+  updatedAt: string;
+  confirmedAt: string;
+}
+
+export type StructureChatScope = "deck" | "section" | "page";
+
+export interface ProposedStructurePage {
+  id: string;
+  pageType: PageType;
+  sectionTitle: string | null;
+  title: string;
+  bullets: string[];
+}
+
+export interface StructureProposal {
+  id: string;
+  projectId: string;
+  scope: StructureChatScope;
+  scopeId: string;
+  message: string;
+  summary: string;
+  pages: ProposedStructurePage[];
+  status: "pending" | "applied" | "dismissed";
+  createdAt: string;
+  appliedAt: string;
 }
 
 export interface OutlinePage {

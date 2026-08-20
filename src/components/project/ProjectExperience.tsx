@@ -5,10 +5,14 @@ import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import type {
   AssumptionsDTO,
-  AssumptionQuestionDTO,
   PageDTO,
   ProjectDTO,
 } from "@/lib/client-types";
+import { useProjectController } from "./useProjectController";
+import { ProjectIcon as Icon, type ProjectIconName as IconName } from "./ProjectIcon";
+import { RequirementsFlow } from "./RequirementsFlow";
+import { SpatialStructureBoard } from "./SpatialStructureBoard";
+import { DesignReferenceGate } from "./DesignReferenceGate";
 
 type Surface = "search" | "draft" | "design";
 type WorkspaceView = "structure" | "workbench";
@@ -21,82 +25,37 @@ const SURFACES: Array<{ id: Surface; label: string; icon: IconName }> = [
 
 export default function ProjectExperience({ projectId }: { projectId: string }) {
   const router = useRouter();
-  const [project, setProject] = useState<ProjectDTO | null>(null);
+  const { project, error, postAction, patchPage, uploadReference } = useProjectController(projectId);
   const [view, setView] = useState<WorkspaceView>("structure");
   const [surface, setSurface] = useState<Surface>("design");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-
-  async function refresh() {
-    const response = await fetch("/api/projects/" + projectId);
-    if (!response.ok) return;
-    const data = (await response.json()) as ProjectDTO;
-    setProject(data);
-    setActiveId((current) => current ?? data.pages[0]?.id ?? null);
-  }
+  const [referenceOpen, setReferenceOpen] = useState(false);
+  useEffect(() => {
+    if (project?.pages.length) {
+      setActiveId((current) => current ?? project.pages[0].id);
+    }
+  }, [project]);
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 1600);
-    return () => window.clearInterval(timer);
-  }, [projectId]);
-
-  useEffect(() => {
-    const source = new EventSource("/api/projects/" + projectId + "/events");
-    source.onmessage = () => void refresh();
-    return () => source.close();
-  }, [projectId]);
+    if (project?.stage === "style_reference" && project.designReference.status !== "confirmed") {
+      setReferenceOpen(true);
+      setSurface("draft");
+    }
+  }, [project?.stage, project?.designReference.status, project?.designReference.uploadId]);
 
   const page = useMemo(
     () => project?.pages.find((item) => item.id === activeId) ?? project?.pages[0] ?? null,
     [project, activeId],
   );
 
-  async function postAction(payload: Record<string, unknown>): Promise<ProjectDTO | null> {
-    setError("");
-    const response = await fetch("/api/projects/" + projectId + "/actions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setError(data.error || "操作失败");
-      return null;
-    }
-    setProject(data as ProjectDTO);
-    return data as ProjectDTO;
-  }
-
-  async function patchPage(pageId: string, input: { title: string; bullets: string[] }) {
-    setError("");
-    const response = await fetch("/api/projects/" + projectId + "/pages/" + pageId, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      setError(data.error || "页面更新失败");
-      return false;
-    }
-    setProject((current) =>
-      current
-        ? { ...current, pages: current.pages.map((item) => (item.id === pageId ? data : item)) }
-        : current,
-    );
-    return true;
-  }
-
-  async function movePage(pageId: string, direction: -1 | 1) {
-    if (!project) return;
-    const currentIndex = project.pages.findIndex((item) => item.id === pageId);
-    const nextIndex = currentIndex + direction;
-    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= project.pages.length) return;
-    const pageIds = project.pages.map((item) => item.id);
-    [pageIds[currentIndex], pageIds[nextIndex]] = [pageIds[nextIndex], pageIds[currentIndex]];
-    await postAction({ type: "reorderPages", pageIds });
+  async function movePageAfter(pageId: string, targetPageId: string) {
+    if (!project || pageId === targetPageId) return;
+    const ids = project.pages.map((item) => item.id).filter((id) => id !== pageId);
+    const targetIndex = ids.indexOf(targetPageId);
+    if (targetIndex < 0) return;
+    ids.splice(targetIndex + 1, 0, pageId);
+    await postAction({ type: "reorderPages", pageIds: ids });
   }
 
   async function sendChat() {
@@ -125,677 +84,119 @@ export default function ProjectExperience({ projectId }: { projectId: string }) 
 
   if (view === "structure") {
     return (
-      <StructureBoard
+      <>
+        <SpatialStructureBoard
+          project={project}
+          error={error}
+          onBack={() => router.push("/")}
+          onOpen={(id, nextSurface) => {
+            setActiveId(id);
+            setView("workbench");
+            setSurface(nextSurface);
+          }}
+          onEnter={() => {
+            setActiveId((current) => current ?? project.pages[0]?.id ?? null);
+            setView("workbench");
+            setSurface(project.stage === "style_reference" ? "draft" : "design");
+          }}
+          onToggleRun={() =>
+            void postAction({ type: project.status === "running" ? "cancel" : "resume" })
+          }
+          onReorder={(pageId, targetPageId) => void movePageAfter(pageId, targetPageId)}
+          onStructureChat={(input) => void postAction({ type: "structureChat", ...input })}
+          onApplyProposal={(proposalId) => void postAction({ type: "applyStructureProposal", proposalId })}
+          onDismissProposal={(proposalId) => void postAction({ type: "dismissStructureProposal", proposalId })}
+        />
+        <ReferenceGateLayer
+          project={project}
+          open={referenceOpen}
+          onOpen={() => setReferenceOpen(true)}
+          onClose={() => setReferenceOpen(false)}
+          onUpload={uploadReference}
+          onConfirm={(input) => {
+            setReferenceOpen(false);
+            void postAction({ type: "confirmDesignReference", ...input });
+          }}
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Workbench
         project={project}
+        page={page}
+        surface={surface}
+        message={message}
         error={error}
+        onMessage={setMessage}
+        onSurface={setSurface}
+        onSelect={setActiveId}
+        onStructure={() => setView("structure")}
         onBack={() => router.push("/")}
-        onOpen={(id) => {
-          setActiveId(id);
-          setView("workbench");
-          setSurface("design");
-        }}
-        onEnter={() => {
-          setActiveId((current) => current ?? project.pages[0]?.id ?? null);
-          setView("workbench");
-        }}
+        onSettings={() => router.push("/settings")}
+        onPresent={() => router.push("/projects/" + projectId + "/present")}
         onToggleRun={() =>
           void postAction({ type: project.status === "running" ? "cancel" : "resume" })
         }
-        onEdit={patchPage}
-        onMove={(pageId, direction) => void movePage(pageId, direction)}
+        onSend={() => void sendChat()}
+        onAssumptions={(assumptions) =>
+          void postAction({ type: "updateAssumptions", assumptions })
+        }
+        onNotes={(speakerNotes) => {
+          if (!page) return;
+          void patchPage(page.id, { speakerNotes });
+        }}
       />
-    );
-  }
-
-  return (
-    <Workbench
-      project={project}
-      page={page}
-      surface={surface}
-      message={message}
-      error={error}
-      onMessage={setMessage}
-      onSurface={setSurface}
-      onSelect={setActiveId}
-      onStructure={() => setView("structure")}
-      onBack={() => router.push("/")}
-      onSettings={() => router.push("/settings")}
-      onPresent={() => router.push("/projects/" + projectId + "/present")}
-      onToggleRun={() =>
-        void postAction({ type: project.status === "running" ? "cancel" : "resume" })
-      }
-      onSend={() => void sendChat()}
-      onAssumptions={(assumptions) =>
-        void postAction({ type: "updateAssumptions", assumptions })
-      }
-      onNotes={(speakerNotes) => {
-        if (!page) return;
-        void fetch("/api/projects/" + projectId + "/pages/" + page.id, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ speakerNotes }),
-        });
-      }}
-    />
+      <ReferenceGateLayer
+        project={project}
+        open={referenceOpen}
+        onOpen={() => setReferenceOpen(true)}
+        onClose={() => setReferenceOpen(false)}
+        onUpload={uploadReference}
+        onConfirm={(input) => {
+          setReferenceOpen(false);
+          void postAction({ type: "confirmDesignReference", ...input });
+        }}
+      />
+    </>
   );
 }
 
-function RequirementsFlow({
+function ReferenceGateLayer({
   project,
-  error,
-  onBack,
-  onSettings,
-  onSubmit,
-  onResume,
-}: {
-  project: ProjectDTO;
-  error: string;
-  onBack: () => void;
-  onSettings: () => void;
-  onSubmit: (assumptions: AssumptionsDTO) => Promise<boolean>;
-  onResume: () => void;
-}) {
-  const [draft, setDraft] = useState(project.assumptions);
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [customIds, setCustomIds] = useState<string[]>([]);
-  const [dirty, setDirty] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const snapshot = JSON.stringify(project.assumptions);
-
-  useEffect(() => {
-    if (!dirty) setDraft(project.assumptions);
-  }, [snapshot, dirty]);
-
-  useEffect(() => {
-    if (project.status === "failed") setSubmitting(false);
-  }, [project.status]);
-
-  const ready = project.requirementsReady && draft.questions.length > 0;
-  const question = draft.questions[questionIndex];
-  const allAnswered = draft.questions.every((item) => item.value.trim());
-
-  function updateMeta(patch: Partial<AssumptionsDTO>) {
-    setDirty(true);
-    setDraft((current) => ({ ...current, ...patch }));
-  }
-
-  function setQuestionValue(target: AssumptionQuestionDTO, value: string, custom = false) {
-    setDirty(true);
-    setCustomIds((current) =>
-      custom
-        ? Array.from(new Set([...current, target.id]))
-        : current.filter((id) => id !== target.id),
-    );
-    setDraft((current) => {
-      const next: AssumptionsDTO = {
-        ...current,
-        questions: current.questions.map((item) =>
-          item.id === target.id ? { ...item, value } : item,
-        ),
-      };
-      if (/页数|篇幅/.test(target.label)) {
-        const numbers = value.match(/\d+/g)?.map(Number) ?? [];
-        if (numbers.length) next.pageCount = Math.min(16, Math.max(8, numbers.at(-1) ?? 12));
-      }
-      if (/受众|听众|对象/.test(target.label) && value) next.audience = value;
-      if (/目的|目标/.test(target.label) && value) next.purpose = value;
-      return next;
-    });
-  }
-
-  async function submit() {
-    if (!allAnswered) return;
-    setSubmitting(true);
-    const saved = await onSubmit(draft);
-    if (!saved) setSubmitting(false);
-  }
-
-  return (
-    <div className="requirements-shell min-h-dvh text-[#15233a]">
-      <header className="flex h-[62px] items-center justify-between border-b border-[#e8edf5] bg-white/90 px-4 backdrop-blur md:px-7">
-        <button className="ui-icon-button" onClick={onBack} aria-label="返回首页">
-          <Icon name="back" size={18} />
-        </button>
-        <div className="min-w-0 px-4 text-center">
-          <div className="truncate text-[14px] font-semibold md:text-[15px]">{project.title}</div>
-          <div className="mt-0.5 text-[10px] font-medium tracking-[0.16em] text-[#9aa8ba]">
-            REQUIREMENT BRIEF
-          </div>
-        </div>
-        <button className="ui-icon-button" onClick={onSettings} aria-label="打开设置">
-          <Icon name="settings" size={18} />
-        </button>
-      </header>
-
-      <main className="mx-auto w-full max-w-[760px] px-4 py-8 md:px-6 md:py-12">
-        <div className="ml-auto max-w-[78%] animate-rise">
-          <div className="rounded-[24px_24px_7px_24px] bg-[#2f80ff] px-5 py-3.5 text-[15px] leading-6 text-white shadow-[0_12px_28px_rgba(47,128,255,0.22)] md:text-[16px]">
-            {project.requestText}
-          </div>
-          <div className="mt-2 pr-1 text-right text-[11px] text-[#9aabc1]">你的项目主题</div>
-        </div>
-
-        <div className="mt-9 space-y-5">
-          <TimelineLine
-            complete={project.researchSources.length > 0 || ready}
-            active={!ready}
-            label={ready ? "背景调研完成" : "正在进行背景调研，收集相关资料…"}
-          />
-
-          {!ready ? (
-            <ResearchLoading project={project} onResume={onResume} />
-          ) : (
-            <>
-              <ResearchReceipt project={project} />
-              <p className="animate-rise text-[16px] leading-7 text-[#34445b] md:text-[17px]">
-                背景调研已完成。下面是影响大纲结构的关键需求，推荐项已经代选，你可以直接提交或逐项调整。
-              </p>
-
-              <section className="animate-rise overflow-hidden rounded-[24px] border border-[#cfe0fb] bg-white shadow-[0_18px_54px_rgba(30,80,140,0.09)]">
-                <div className="flex items-center justify-between border-b border-[#dbe8fb] bg-[#eef5ff] px-5 py-4">
-                  <div className="flex items-center gap-3 text-[15px] font-semibold text-[#1765dc]">
-                    <span className="grid h-8 w-8 place-items-center rounded-full bg-[#2f80ff] text-white">
-                      <Icon name="target" size={17} />
-                    </span>
-                    内容需求单
-                  </div>
-                  <span className="text-[14px] font-semibold text-[#2f80ff]">
-                    {questionIndex + 1}/{draft.questions.length}
-                  </span>
-                </div>
-
-                <div className="px-5 py-5 md:px-6 md:py-6">
-                  <details className="mb-5 rounded-[14px] border border-[#e8eef7] bg-[#f9fbfe]">
-                    <summary className="cursor-pointer list-none px-4 py-3 text-[12px] font-medium text-[#6f8199]">
-                      基础设定 · {draft.pageCount} 页 · {draft.audience}
-                    </summary>
-                    <div className="grid gap-3 border-t border-[#e8eef7] p-4 md:grid-cols-[110px_1fr]">
-                      <label className="text-[11px] text-[#7c8da4]">
-                        总页数
-                        <input
-                          type="number"
-                          min={8}
-                          max={16}
-                          value={draft.pageCount}
-                          onChange={(event) => updateMeta({ pageCount: Number(event.target.value) })}
-                          className="form-field mt-1"
-                        />
-                      </label>
-                      <label className="text-[11px] text-[#7c8da4]">
-                        核心受众
-                        <input
-                          value={draft.audience}
-                          onChange={(event) => updateMeta({ audience: event.target.value })}
-                          className="form-field mt-1"
-                        />
-                      </label>
-                      <label className="text-[11px] text-[#7c8da4] md:col-span-2">
-                        演示目标
-                        <input
-                          value={draft.purpose}
-                          onChange={(event) => updateMeta({ purpose: event.target.value })}
-                          className="form-field mt-1"
-                        />
-                      </label>
-                    </div>
-                  </details>
-
-                  {question && (
-                    <div key={question.id} className="animate-question">
-                      <div className="text-[12px] font-semibold text-[#2f80ff]">
-                        问题 {questionIndex + 1}
-                      </div>
-                      <h2 className="mt-1.5 text-[20px] font-semibold tracking-[-0.02em] text-[#17243a]">
-                        {question.label}
-                      </h2>
-                      {question.reason && (
-                        <p className="mt-2 text-[12px] leading-5 text-[#8998ac]">
-                          推荐依据：{question.reason}
-                        </p>
-                      )}
-                      <div className="mt-5 grid gap-2.5 md:grid-cols-2">
-                        {question.options.map((option, index) => {
-                          const active = question.value === option && !customIds.includes(question.id);
-                          return (
-                            <button
-                              key={option}
-                              type="button"
-                              onClick={() => setQuestionValue(question, option)}
-                              className={cx(
-                                "requirement-option",
-                                active && "requirement-option-active",
-                              )}
-                            >
-                              <span className="w-5 shrink-0 font-semibold opacity-75">
-                                {String.fromCharCode(65 + index)}
-                              </span>
-                              <span className="truncate">{option}</span>
-                              {active && <Icon name="check" size={16} />}
-                            </button>
-                          );
-                        })}
-                        <button
-                          type="button"
-                          onClick={() => setQuestionValue(question, "", true)}
-                          className={cx(
-                            "requirement-option",
-                            customIds.includes(question.id) && "requirement-option-active",
-                          )}
-                        >
-                          <span className="w-5 shrink-0 font-semibold opacity-75">
-                            {String.fromCharCode(65 + question.options.length)}
-                          </span>
-                          <span>自定义</span>
-                        </button>
-                      </div>
-                      {customIds.includes(question.id) && (
-                        <input
-                          autoFocus
-                          value={question.value}
-                          onChange={(event) => setQuestionValue(question, event.target.value, true)}
-                          placeholder="输入你的答案"
-                          className="form-field mt-3"
-                        />
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between border-t border-[#edf1f7] px-5 py-4">
-                  <div className="flex gap-2">
-                    <button
-                      className="ui-icon-button"
-                      disabled={questionIndex === 0}
-                      onClick={() => setQuestionIndex((current) => Math.max(0, current - 1))}
-                      aria-label="上一题"
-                    >
-                      <Icon name="back" size={16} />
-                    </button>
-                    <button
-                      className="ui-icon-button"
-                      disabled={questionIndex === draft.questions.length - 1}
-                      onClick={() =>
-                        setQuestionIndex((current) =>
-                          Math.min(draft.questions.length - 1, current + 1),
-                        )
-                      }
-                      aria-label="下一题"
-                    >
-                      <Icon name="arrow" size={16} />
-                    </button>
-                  </div>
-                  {questionIndex === draft.questions.length - 1 ? (
-                    <button
-                      disabled={!allAnswered || submitting}
-                      onClick={() => void submit()}
-                      className="primary-button"
-                    >
-                      {submitting ? "正在生成结构板…" : "提交需求单"}
-                      {!submitting && <Icon name="arrow" size={15} />}
-                    </button>
-                  ) : (
-                    <button
-                      disabled={!question?.value.trim()}
-                      onClick={() => setQuestionIndex((current) => current + 1)}
-                      className="primary-button"
-                    >
-                      下一题
-                      <Icon name="arrow" size={15} />
-                    </button>
-                  )}
-                </div>
-              </section>
-            </>
-          )}
-          {(error || project.errorText) && (
-            <div className="rounded-[14px] border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-700">
-              {error || project.errorText}
-            </div>
-          )}
-        </div>
-      </main>
-    </div>
-  );
-}
-
-function ResearchLoading({ project, onResume }: { project: ProjectDTO; onResume: () => void }) {
-  const failed = project.status === "failed";
-  const paused = project.status === "paused" && !project.requirementsReady;
-  return (
-    <div className="rounded-[22px] border border-[#e4ebf5] bg-white p-5 shadow-[0_14px_40px_rgba(30,64,110,0.07)]">
-      <div className="flex items-center gap-3">
-        <span className={cx("research-pulse", (failed || paused) && "bg-amber-400")} />
-        <div>
-          <div className="text-[14px] font-semibold">
-            {failed ? "调研流程遇到问题" : paused ? "调研已暂停" : "Agent 正在建立主题背景"}
-          </div>
-          <div className="mt-1 text-[12px] text-[#8292a7]">
-            {project.events.at(-1)?.title || "规划检索词并筛选可靠来源"}
-          </div>
-        </div>
-      </div>
-      <div className="mt-5 grid grid-cols-3 gap-2">
-        {[0, 1, 2].map((index) => (
-          <div key={index} className="h-2 overflow-hidden rounded-full bg-[#edf2f8]">
-            <div
-              className="h-full rounded-full bg-[#4c91ff] transition-all"
-              style={{ width: index === 0 ? "100%" : index === 1 ? "64%" : "22%" }}
-            />
-          </div>
-        ))}
-      </div>
-      {(failed || paused) && (
-        <button onClick={onResume} className="secondary-button mt-5">
-          继续调研
-        </button>
-      )}
-    </div>
-  );
-}
-
-function ResearchReceipt({ project }: { project: ProjectDTO }) {
-  return (
-    <div className="animate-rise overflow-hidden rounded-[18px] border border-[#dbe8fb] bg-[#f3f8ff]">
-      <div className="flex items-center justify-between px-4 py-3">
-        <div className="flex items-center gap-2 text-[13px] font-semibold text-[#255fba]">
-          <span className="grid h-6 w-6 place-items-center rounded-full bg-[#2f80ff] text-white">
-            <Icon name="check" size={14} />
-          </span>
-          背景调研完成
-        </div>
-        <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-[#2f80ff]">
-          {project.researchSources.length} 条资料
-        </span>
-      </div>
-      <div className="border-t border-[#dbe8fb] bg-white/70 px-4 py-2.5">
-        {project.researchSources.slice(0, 2).map((source) => (
-          <a
-            key={source.url}
-            href={source.url}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-2 py-1.5 text-[11px] text-[#6f8097] hover:text-[#2f80ff]"
-          >
-            <Icon name="search" size={13} />
-            <span className="truncate">{source.title}</span>
-          </a>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function TimelineLine({
-  complete,
-  active,
-  label,
-}: {
-  complete: boolean;
-  active: boolean;
-  label: string;
-}) {
-  return (
-    <div className="flex items-center gap-3 text-[14px] text-[#7c90a9]">
-      <span
-        className={cx(
-          "grid h-8 w-8 shrink-0 place-items-center rounded-full",
-          complete ? "bg-[#e8f2ff] text-[#2f80ff]" : "bg-[#eef2f7] text-[#98a6b8]",
-        )}
-      >
-        {complete ? <Icon name="check" size={16} /> : <span className={cx(active && "research-pulse")} />}
-      </span>
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function StructureBoard({
-  project,
-  error,
-  onBack,
+  open,
   onOpen,
-  onEnter,
-  onToggleRun,
-  onEdit,
-  onMove,
-}: {
-  project: ProjectDTO;
-  error: string;
-  onBack: () => void;
-  onOpen: (id: string) => void;
-  onEnter: () => void;
-  onToggleRun: () => void;
-  onEdit: (pageId: string, input: { title: string; bullets: string[] }) => Promise<boolean>;
-  onMove: (pageId: string, direction: -1 | 1) => void;
-}) {
-  const [editing, setEditing] = useState<PageDTO | null>(null);
-  const groups = useMemo(() => groupPages(project.pages), [project.pages]);
-
-  return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-[#f6f8fb] text-[#17243a]">
-      <header className="flex h-[64px] shrink-0 items-center justify-between border-b border-[#e6eaf0] bg-white px-4 md:px-6">
-        <div className="flex min-w-0 items-center gap-3">
-          <button className="ui-icon-button" onClick={onBack} aria-label="返回首页">
-            <Icon name="back" size={18} />
-          </button>
-          <div className="min-w-0">
-            <div className="truncate text-[14px] font-semibold">{project.title}</div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-[10px] font-medium text-[#8a98aa]">
-              <span className={cx("h-1.5 w-1.5 rounded-full", project.status === "running" ? "bg-emerald-500" : "bg-[#aab5c4]")} />
-              {project.status === "running" ? "正在继续生成页面" : "结构板可编辑"}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="secondary-button hidden sm:flex" onClick={onToggleRun}>
-            <Icon name={project.status === "running" ? "pause" : "play"} size={14} />
-            {project.status === "running" ? "暂停" : "继续"}
-          </button>
-          <button className="primary-button" onClick={onEnter}>
-            进入画布
-            <Icon name="arrow" size={15} />
-          </button>
-        </div>
-      </header>
-
-      <div className="blueprint-grid custom-scroll flex-1 overflow-auto">
-        <div className="min-w-max px-6 py-7 md:px-10 md:py-9">
-          <div className="mb-6 flex items-end justify-between">
-            <div>
-              <div className="text-[11px] font-semibold tracking-[0.16em] text-[#2f80ff]">
-                STORYLINE BOARD
-              </div>
-              <h1 className="mt-1 text-[25px] font-semibold tracking-[-0.035em]">演示结构板</h1>
-              <p className="mt-1.5 text-[12px] text-[#7d8ca0]">
-                {project.pages.length} 页 · {groups.length} 个叙事区段 · 点击页面进入画布
-              </p>
-            </div>
-          </div>
-          <div className="flex items-start gap-5">
-            {groups.map((group, groupIndex) => (
-              <section key={group.key} className="w-[610px] shrink-0">
-                <div className="structure-section-card">
-                  <div className="text-[10px] font-semibold tracking-[0.18em] text-[#2f80ff]">
-                    {String(groupIndex + 1).padStart(2, "0")} / SECTION
-                  </div>
-                  <div className="mt-7 max-w-[480px] text-[26px] font-semibold leading-[1.15] tracking-[-0.04em]">
-                    {group.title}
-                  </div>
-                  <div className="mt-3 text-[11px] text-[#8a99ab]">{group.pages.length} 页内容</div>
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-3">
-                  {group.pages.map((page) => (
-                    <StructurePageCard
-                      key={page.id}
-                      page={page}
-                      count={project.pages.length}
-                      onOpen={() => onOpen(page.id)}
-                      onEdit={() => setEditing(page)}
-                      onMove={(direction) => onMove(page.id, direction)}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-          {error && <div className="mt-5 text-[12px] text-red-600">{error}</div>}
-        </div>
-      </div>
-      {editing && (
-        <PageEditDialog
-          page={editing}
-          onClose={() => setEditing(null)}
-          onSave={async (input) => {
-            const saved = await onEdit(editing.id, input);
-            if (saved) setEditing(null);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-function StructurePageCard({
-  page,
-  count,
-  onOpen,
-  onEdit,
-  onMove,
-}: {
-  page: PageDTO;
-  count: number;
-  onOpen: () => void;
-  onEdit: () => void;
-  onMove: (direction: -1 | 1) => void;
-}) {
-  return (
-    <article className="group relative min-h-[188px] rounded-[16px] border border-[#e4e9f0] bg-white p-4 shadow-[0_8px_26px_rgba(38,60,90,0.055)] transition duration-200 hover:-translate-y-0.5 hover:border-[#bcd5fb] hover:shadow-[0_14px_34px_rgba(38,80,150,0.10)]">
-      <button className="block w-full text-left" onClick={onOpen}>
-        <div className="flex items-center justify-between text-[10px] font-medium text-[#8d9aab]">
-          <span>#{String(page.sortOrder + 1).padStart(2, "0")}</span>
-          <span className="rounded-full bg-[#f2f5f8] px-2 py-1">{pageTypeLabel(page.pageType)}</span>
-        </div>
-        <h2 className="mt-5 line-clamp-2 min-h-[44px] text-[15px] font-semibold leading-[1.45] tracking-[-0.02em]">
-          {page.title}
-        </h2>
-        <p className="mt-2 line-clamp-2 min-h-[34px] text-[11px] leading-[1.55] text-[#8896a8]">
-          {page.bullets.slice(0, 2).join(" · ") || "专用页面"}
-        </p>
-      </button>
-      <div className="mt-4 grid grid-cols-3 gap-1.5">
-        <ArtifactPill icon="search" label="搜索" status={page.searchStatus} />
-        <ArtifactPill icon="file" label="初稿" status={page.draftStatus} />
-        <ArtifactPill icon="palette" label="设计" status={page.designStatus} />
-      </div>
-      <div className="absolute top-3 right-3 hidden items-center gap-1 rounded-full border border-[#e4e9f0] bg-white p-1 shadow-sm group-hover:flex">
-        <button className="mini-icon-button" onClick={onEdit} aria-label="编辑页面">
-          <Icon name="edit" size={13} />
-        </button>
-        <button
-          className="mini-icon-button"
-          disabled={page.sortOrder === 0}
-          onClick={() => onMove(-1)}
-          aria-label="向前移动"
-        >
-          <Icon name="up" size={13} />
-        </button>
-        <button
-          className="mini-icon-button"
-          disabled={page.sortOrder === count - 1}
-          onClick={() => onMove(1)}
-          aria-label="向后移动"
-        >
-          <Icon name="down" size={13} />
-        </button>
-      </div>
-    </article>
-  );
-}
-
-function ArtifactPill({
-  icon,
-  label,
-  status,
-}: {
-  icon: IconName;
-  label: string;
-  status: string;
-}) {
-  const ready = status === "ready";
-  const running = status === "running";
-  return (
-    <div
-      className={cx(
-        "flex items-center justify-center gap-1 rounded-[9px] border px-1.5 py-2 text-[9px] font-medium",
-        ready
-          ? "border-[#d9e9ff] bg-[#f2f7ff] text-[#2773df]"
-          : running
-            ? "border-amber-100 bg-amber-50 text-amber-700"
-            : "border-[#edf0f4] bg-[#fafbfc] text-[#9aa6b5]",
-      )}
-    >
-      <Icon name={ready ? "check" : icon} size={12} />
-      {label}
-    </div>
-  );
-}
-
-function PageEditDialog({
-  page,
   onClose,
-  onSave,
+  onUpload,
+  onConfirm,
 }: {
-  page: PageDTO;
+  project: ProjectDTO;
+  open: boolean;
+  onOpen: () => void;
   onClose: () => void;
-  onSave: (input: { title: string; bullets: string[] }) => Promise<void>;
+  onUpload: (file: File) => Promise<boolean>;
+  onConfirm: (input: { mode: "preset" | "upload"; styleId: string; colorPreference: string }) => void;
 }) {
-  const [title, setTitle] = useState(page.title);
-  const [bullets, setBullets] = useState(page.bullets.join("\n"));
-  const [saving, setSaving] = useState(false);
+  const needed = project.stage === "style_reference" && project.designReference.status !== "confirmed";
+  if (!needed) return null;
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-[#17243a]/25 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-[520px] rounded-[22px] border border-white/80 bg-white p-5 shadow-[0_28px_90px_rgba(20,40,70,0.25)]">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold text-[#2f80ff]">编辑第 {page.sortOrder + 1} 页</div>
-            <div className="mt-1 text-[17px] font-semibold">调整故事线节点</div>
-          </div>
-          <button className="ui-icon-button" onClick={onClose} aria-label="关闭">
-            <Icon name="close" size={16} />
-          </button>
-        </div>
-        <label className="mt-5 block text-[11px] text-[#7d8ca0]">
-          页面标题
-          <input value={title} onChange={(event) => setTitle(event.target.value)} className="form-field mt-1.5" />
-        </label>
-        <label className="mt-4 block text-[11px] text-[#7d8ca0]">
-          内容要点 · 每行一条
-          <textarea
-            value={bullets}
-            onChange={(event) => setBullets(event.target.value)}
-            rows={6}
-            className="form-field mt-1.5 resize-none"
-          />
-        </label>
-        <div className="mt-5 flex justify-end gap-2">
-          <button className="secondary-button" onClick={onClose}>取消</button>
-          <button
-            className="primary-button"
-            disabled={saving || !title.trim()}
-            onClick={async () => {
-              setSaving(true);
-              await onSave({
-                title: title.trim(),
-                bullets: bullets.split("\n").map((item) => item.trim()).filter(Boolean),
-              });
-              setSaving(false);
-            }}
-          >
-            {saving ? "保存中…" : "保存并重算"}
-          </button>
-        </div>
-      </div>
-    </div>
+    <>
+      {!open && (
+        <button className="reference-gate-reopen" onClick={onOpen}>
+          <Icon name="palette" size={15} />
+          确认设计参考
+        </button>
+      )}
+      <DesignReferenceGate
+        project={project}
+        open={open}
+        onClose={onClose}
+        onUpload={onUpload}
+        onConfirm={onConfirm}
+      />
+    </>
   );
 }
 
@@ -840,9 +241,9 @@ function Workbench({
     project.pages.every((item) => item.designStatus === "ready" && item.designSvg);
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-[#e9ebf0] text-[#17243a]">
+    <div className="fixed inset-0 z-40 flex overflow-hidden bg-[#e9ebf0] text-[#17243a]">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="grid h-[62px] shrink-0 grid-cols-[190px_minmax(0,1fr)_auto] items-center border-b border-[#e5e8ee] bg-white px-2 md:grid-cols-[210px_minmax(0,1fr)_auto] md:px-3">
+        <header className="grid h-[62px] shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center border-b border-[#e5e8ee] bg-white px-2 md:grid-cols-[210px_minmax(0,1fr)_auto] md:px-3">
           <div className="surface-tabs">
             {SURFACES.map((item) => (
               <button
@@ -855,7 +256,7 @@ function Workbench({
               </button>
             ))}
           </div>
-          <div className="flex min-w-0 items-center gap-2 px-3">
+          <div className="hidden min-w-0 items-center gap-2 px-3 md:flex">
             <button className="hidden text-[12px] text-[#8290a3] hover:text-[#2f80ff] md:block" onClick={onBack}>
               首页
             </button>
@@ -893,7 +294,7 @@ function Workbench({
         </header>
 
         <div className="flex min-h-0 flex-1">
-          <aside className="flex w-[190px] shrink-0 flex-col border-r border-[#e3e6eb] bg-white md:w-[210px]">
+          <aside className="hidden w-[190px] shrink-0 flex-col border-r border-[#e3e6eb] bg-white md:flex md:w-[210px]">
             <div className="flex items-center justify-between px-3 py-3 text-[11px] font-medium text-[#748399]">
               <span>幻灯片</span>
               <span>共 {project.pages.length} 页</span>
@@ -926,6 +327,23 @@ function Workbench({
           </aside>
 
           <main className="flex min-w-0 flex-1 flex-col">
+            <div className="custom-scroll flex shrink-0 gap-2 overflow-x-auto border-b border-[#e1e6ed] bg-white px-2 py-2 md:hidden">
+              {project.pages.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => onSelect(item.id)}
+                  className={cx(
+                    "min-w-[76px] rounded-[10px] border px-2 py-2 text-left",
+                    item.id === page?.id
+                      ? "border-[#2f80ff] bg-[#edf5ff] text-[#246dcc]"
+                      : "border-[#e2e7ed] bg-[#f8f9fb] text-[#77869a]",
+                  )}
+                >
+                  <span className="block text-[9px] font-semibold">{String(item.sortOrder + 1).padStart(2, "0")}</span>
+                  <span className="mt-1 block truncate text-[8px]">{item.title}</span>
+                </button>
+              ))}
+            </div>
             <div className="canvas-grid flex min-h-0 flex-1 items-center justify-center overflow-auto px-4 py-5 md:px-7 md:py-7">
               <CanvasSurface page={page} surface={surface} />
             </div>
@@ -1007,10 +425,18 @@ function CanvasSurface({ page, surface }: { page: PageDTO | null; surface: Surfa
   }
   return (
     <div className="aspect-video w-full max-w-[1180px] overflow-hidden bg-white shadow-[0_20px_65px_rgba(38,50,70,0.16)]">
-      <img
+      <SvgImage
         alt={page.title + (surface === "draft" ? "初稿" : "设计稿")}
-        src={"data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg)}
+        svg={svg}
         className="h-full w-full object-contain"
+        fallback={
+          <div className="grid h-full place-items-center bg-[#f8fafc] text-center text-[13px] text-[#7a899d]">
+            <div>
+              <Icon name="sparkle" size={18} className="mx-auto mb-3 text-[#2f80ff]" />
+              这页稿件无法渲染，继续项目后会自动修复
+            </div>
+          </div>
+        }
       />
     </div>
   );
@@ -1182,6 +608,14 @@ function ProcessRail({
           progress={1}
         />
 
+        <RailStageCard
+          tone={project.deckPlan?.status === "ready" ? "green" : "neutral"}
+          icon="target"
+          title={project.deckPlan?.status === "ready" ? "整套内容策划已就绪" : "正在统一内容策划"}
+          meta={project.deckPlan?.shared.concept || "统一版式、字阶与配图意图"}
+          progress={project.deckPlan?.status === "ready" ? 1 : project.stage === "planning" ? 0.5 : 0}
+        />
+
         <button className="block w-full text-left" onClick={() => onSurface("draft")}>
           <RailStageCard
             tone={surface === "draft" ? "purple" : "neutral"}
@@ -1191,6 +625,14 @@ function ProcessRail({
             progress={ratio(draftReady, project.pages.length)}
           />
         </button>
+
+        <RailStageCard
+          tone={project.designReference.status === "confirmed" ? "green" : "neutral"}
+          icon="palette"
+          title={project.designReference.status === "confirmed" ? "设计参考已确认" : "等待确认设计参考"}
+          meta={project.designReference.profile?.name || project.style.name}
+          progress={project.designReference.status === "confirmed" ? 1 : project.designReference.status === "ready" ? 0.8 : 0}
+        />
 
         <button className="block w-full text-left" onClick={() => onSurface("design")}>
           <RailStageCard
@@ -1390,10 +832,39 @@ function Thumb({ svg }: { svg: string }) {
     );
   }
   return (
-    <img
+    <SvgImage
       alt=""
       className="aspect-video w-full bg-white object-contain"
+      svg={svg}
+      fallback={
+        <div className="grid aspect-video w-full place-items-center bg-[#f5f7fa] text-[#c1c9d4]">
+          <Icon name="sparkle" size={16} />
+        </div>
+      }
+    />
+  );
+}
+
+function SvgImage({
+  svg,
+  alt,
+  className,
+  fallback,
+}: {
+  svg: string;
+  alt: string;
+  className: string;
+  fallback: ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [svg]);
+  if (failed) return fallback;
+  return (
+    <img
+      alt={alt}
+      className={className}
       src={"data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg)}
+      onError={() => setFailed(true)}
     />
   );
 }
@@ -1409,32 +880,6 @@ function LoadingScreen({ label }: { label: string }) {
   );
 }
 
-function groupPages(pages: PageDTO[]) {
-  const groups: Array<{ key: string; sourceKey: string; title: string; pages: PageDTO[] }> = [];
-  for (const page of pages) {
-    const sourceKey =
-      page.pageType === "cover" || page.pageType === "toc"
-        ? "opening"
-        : page.pageType === "end"
-          ? "ending"
-          : page.sectionTitle || "main";
-    const title =
-      sourceKey === "opening"
-        ? "开场与目录"
-        : sourceKey === "ending"
-          ? "总结与收束"
-          : page.sectionTitle || "核心内容";
-    const current = groups.at(-1);
-    if (current?.sourceKey === sourceKey) current.pages.push(page);
-    else groups.push({ key: sourceKey + "-" + groups.length, sourceKey, title, pages: [page] });
-  }
-  return groups;
-}
-
-function pageTypeLabel(type: PageDTO["pageType"]) {
-  return { cover: "封面", toc: "目录", content: "内容页", end: "结尾" }[type];
-}
-
 function surfaceLabel(surface: Surface) {
   return { search: "搜索", draft: "初稿", design: "设计稿" }[surface];
 }
@@ -1445,93 +890,4 @@ function ratio(value: number, total: number) {
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
-}
-
-type IconName =
-  | "arrow"
-  | "back"
-  | "board"
-  | "check"
-  | "close"
-  | "cursor"
-  | "down"
-  | "download"
-  | "edit"
-  | "file"
-  | "mic"
-  | "palette"
-  | "pause"
-  | "play"
-  | "search"
-  | "send"
-  | "settings"
-  | "sparkle"
-  | "target"
-  | "up";
-
-function Icon({
-  name,
-  size = 16,
-  className,
-}: {
-  name: IconName;
-  size?: number;
-  className?: string;
-}) {
-  const common = {
-    width: size,
-    height: size,
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.8,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    className,
-    "aria-hidden": true,
-  };
-  switch (name) {
-    case "back":
-      return <svg {...common}><path d="m15 18-6-6 6-6" /></svg>;
-    case "arrow":
-      return <svg {...common}><path d="M5 12h14M13 6l6 6-6 6" /></svg>;
-    case "check":
-      return <svg {...common}><path d="m5 12 4 4L19 6" /></svg>;
-    case "search":
-      return <svg {...common}><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>;
-    case "file":
-      return <svg {...common}><path d="M7 3h7l4 4v14H7z" /><path d="M14 3v5h5M10 13h5M10 17h5" /></svg>;
-    case "palette":
-      return <svg {...common}><path d="M12 3a9 9 0 1 0 0 18h1.2a2 2 0 0 0 0-4H12a2 2 0 0 1 0-4h3a6 6 0 0 0-3-10Z" /><circle cx="7.5" cy="10" r=".7" fill="currentColor" /><circle cx="9.5" cy="6.5" r=".7" fill="currentColor" /><circle cx="14" cy="6.5" r=".7" fill="currentColor" /></svg>;
-    case "board":
-      return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M8 4v16M8 10h13" /></svg>;
-    case "play":
-      return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="m10 8 6 4-6 4Z" /></svg>;
-    case "pause":
-      return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M10 9v6M14 9v6" /></svg>;
-    case "download":
-      return <svg {...common}><path d="M12 3v12M7 10l5 5 5-5M4 20h16" /></svg>;
-    case "settings":
-      return <svg {...common}><circle cx="12" cy="12" r="3" /><path d="M19 13.5v-3l-2-.6-.7-1.7 1-1.8-2.1-2.1-1.8 1-1.7-.7L10.5 3h-3l-.6 2-1.7.7-1.8-1-2.1 2.1 1 1.8-.7 1.7-2 .6v3l2 .6.7 1.7-1 1.8 2.1 2.1 1.8-1 1.7.7.6 2h3l.6-2 1.7-.7 1.8 1 2.1-2.1-1-1.8.7-1.7z" transform="scale(.75) translate(4 4)" /></svg>;
-    case "sparkle":
-      return <svg {...common}><path d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4ZM18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8Z" /></svg>;
-    case "target":
-      return <svg {...common}><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" /><path d="M19 5 13.5 10.5" /></svg>;
-    case "edit":
-      return <svg {...common}><path d="m4 16-.8 4 4-.8L18 8.4 14.6 5Z" /><path d="m13.5 6 3.4 3.4" /></svg>;
-    case "up":
-      return <svg {...common}><path d="m7 14 5-5 5 5" /></svg>;
-    case "down":
-      return <svg {...common}><path d="m7 10 5 5 5-5" /></svg>;
-    case "close":
-      return <svg {...common}><path d="m6 6 12 12M18 6 6 18" /></svg>;
-    case "mic":
-      return <svg {...common}><rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>;
-    case "cursor":
-      return <svg {...common}><path d="m5 3 12 8-5 1 3 6-2.5 1.3-3-6-4 3Z" /></svg>;
-    case "send":
-      return <svg {...common}><path d="m3 11 17-8-7 18-2-7Z" /><path d="m11 14 9-11" /></svg>;
-    default:
-      return <svg {...common}><circle cx="12" cy="12" r="8" /></svg>;
-  }
 }

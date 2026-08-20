@@ -2,6 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  ArrowUpRight,
+  History,
+  Plus,
+  Settings,
+  Sparkles,
+} from "lucide-react";
 import type { ProjectSummaryDTO } from "@/lib/client-types";
 
 export default function HomeScreen() {
@@ -13,26 +20,11 @@ export default function HomeScreen() {
   const [ready, setReady] = useState(true);
 
   useEffect(() => {
-    void fetch("/api/projects")
-      .then((res) => res.json())
-      .then((data) => setProjects(data.items ?? []));
-    void fetch("/api/settings")
+    void fetch("/api/bootstrap")
       .then((res) => res.json())
       .then((data) => {
-        const settings = data.settings;
-        setReady(
-          Boolean(
-            settings?.text?.apiKey &&
-              settings?.text?.baseUrl &&
-              settings?.text?.model &&
-              settings?.svg?.apiKey &&
-              settings?.svg?.baseUrl &&
-              settings?.svg?.model &&
-              settings?.search?.apiKey &&
-              settings?.search?.baseUrl &&
-              settings?.search?.model,
-          ),
-        );
+        setProjects(data.projects ?? []);
+        setReady(Boolean(data.configured));
       });
   }, []);
 
@@ -55,90 +47,108 @@ export default function HomeScreen() {
   }
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-white text-[#1d1d1f]">
-      <aside className="m-3 hidden w-[300px] shrink-0 flex-col overflow-hidden rounded-[20px] border border-[#e5e5e5] bg-[#f7f7f9] md:flex">
-        <div className="flex items-center justify-between px-5 pt-5 pb-2">
-          <div className="text-[15px] font-semibold tracking-wide">ppt-agent</div>
-          <button
-            className="rounded-lg px-2 py-1 text-[12px] text-black/40 hover:bg-black/5 hover:text-black/70"
-            onClick={() => router.push("/settings")}
-          >
-            设置
+    <div className="atelier-home h-dvh overflow-hidden text-[#111b2b]">
+      <div className="atelier-orbit" aria-hidden />
+      <aside className="atelier-history hidden md:flex">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-[12px] font-semibold tracking-[0.18em] text-white">
+            <span className="grid h-7 w-7 place-items-center rounded-full bg-[#2f80ff]">
+              <Sparkles size={14} />
+            </span>
+            PPT AGENT
+          </div>
+          <button className="atelier-icon-dark" onClick={() => router.push("/settings")} aria-label="打开设置">
+            <Settings size={16} />
           </button>
         </div>
-        <div className="px-4 py-3">
-          <button
-            className="flex w-full items-center gap-3 rounded-[14px] border border-[#e5e5e5] bg-white px-3 py-2.5 text-left text-[14px] font-medium shadow-[0_1px_2px_rgba(0,0,0,0.02)]"
-            onClick={() => setText("")}
-          >
-            <span className="text-lg leading-none">+</span>
-            新建会话
-          </button>
+
+        <button className="atelier-new" onClick={() => setText("")}>
+          <Plus size={16} />
+          新建演示
+          <ArrowUpRight className="ml-auto" size={14} />
+        </button>
+
+        <div className="mt-8 flex items-center gap-2 text-[10px] font-semibold tracking-[0.2em] text-white/40">
+          <History size={13} />
+          RECENT WORK
         </div>
-        <div className="custom-scroll flex-1 space-y-0.5 overflow-y-auto px-2 pb-4">
-          {projects.map((project) => (
+        <div className="custom-scroll mt-3 flex-1 space-y-1 overflow-y-auto">
+          {projects.map((project, index) => (
             <button
               key={project.id}
-              className="block w-full rounded-[12px] px-3 py-2.5 text-left hover:bg-white"
+              className="atelier-project group"
               onClick={() => router.push(`/projects/${project.id}`)}
             >
-              <div className="truncate text-[13px] font-medium">{project.title}</div>
-              <div className="mt-0.5 truncate text-[11px] text-[#86868b]">
-                {project.stage} · {project.status}
-              </div>
+              <span className="atelier-project-index">{String(index + 1).padStart(2, "0")}</span>
+              <span className="min-w-0">
+                <span className="block truncate text-[12px] font-medium text-white/88">{project.title}</span>
+                <span className="mt-1 block text-[9px] tracking-[0.12em] text-white/36">
+                  {project.stage.toUpperCase()} / {project.status.toUpperCase()}
+                </span>
+              </span>
             </button>
           ))}
         </div>
+        <div className="border-t border-white/10 pt-4 text-[9px] leading-5 tracking-[0.15em] text-white/30">
+          RESEARCH · STORY · VISUAL<br />LOCAL PRESENTATION ENGINE
+        </div>
       </aside>
 
-      <main className="relative flex flex-1 flex-col items-center justify-center px-6">
-        <button
-          className="absolute top-5 right-6 text-[13px] text-black/40 hover:text-black/70 md:hidden"
-          onClick={() => router.push("/settings")}
-        >
-          设置
-        </button>
-        <div className="w-full max-w-[760px]">
-          <h1 className="serif text-center text-[40px] leading-tight font-medium tracking-[-0.03em] md:text-[52px]">
-            有什么 PPT 需要我做？
-          </h1>
-          <p className="mt-3 text-center text-[14px] text-[#6e6e73]">
-            丢一个主题。调研、提问、大纲、策划稿、设计稿，它自己跑完。
-          </p>
-          <div className="mt-8 rounded-[22px] border border-[#e5e5e5] bg-white p-3 shadow-[0_8px_30px_rgba(0,0,0,0.04)]">
-            <textarea
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              placeholder="例如：Dify 企业介绍 / 北京五日游攻略"
-              className="min-h-[120px] w-full resize-none bg-transparent px-3 py-2 text-[16px] outline-none"
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                  void start();
-                }
-              }}
-            />
-            <div className="flex items-center justify-between px-2 pb-1">
-              <span className="text-[12px] text-[#86868b]">{text.length} 字</span>
-              <button
-                disabled={busy || !text.trim()}
-                onClick={() => void start()}
-                className="rounded-full bg-[#0b84ff] px-5 py-2 text-[13px] font-medium text-white disabled:opacity-40"
-              >
-                {busy ? "创建中…" : "开始"}
-              </button>
-            </div>
+      <main className="relative flex h-full min-w-0 flex-1 flex-col md:ml-[292px]">
+        <header className="flex h-[70px] items-center justify-between px-5 md:px-9">
+          <div className="text-[10px] font-semibold tracking-[0.2em] text-[#8492a6]">BLUEPRINT ATELIER / 01</div>
+          <button className="atelier-icon-light md:hidden" onClick={() => router.push("/settings")} aria-label="打开设置">
+            <Settings size={17} />
+          </button>
+          <div className="hidden items-center gap-2 text-[10px] font-medium text-[#68778c] md:flex">
+            <span className={ready ? "status-dot status-dot-ready" : "status-dot"} />
+            {ready ? "模型系统已就绪" : "等待模型配置"}
           </div>
-          {!ready && (
-            <p className="mt-4 text-center text-[13px] text-[#b45309]">
-              三套模型还没配置完整。先去
-              <button className="mx-1 underline" onClick={() => router.push("/settings")}>
-                设置
+        </header>
+
+        <section className="relative flex flex-1 items-center px-5 pb-10 md:px-[7vw]">
+          <div className="atelier-sequence" aria-hidden>01—05</div>
+          <div className="w-full max-w-[1040px]">
+            <div className="atelier-kicker">
+              <span />
+              从一句话到一整套可放映叙事
+            </div>
+            <h1 className="atelier-title">
+              把想法<br />
+              <span>编排成</span> 演示
+            </h1>
+            <div className="mt-6 grid items-end gap-6 lg:grid-cols-[minmax(0,700px)_1fr]">
+              <div className="atelier-composer">
+                <textarea
+                  value={text}
+                  onChange={(event) => setText(event.target.value)}
+                  placeholder="输入主题、公司或想讲清楚的问题"
+                  aria-label="演示主题"
+                  onKeyDown={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void start();
+                  }}
+                />
+                <div className="flex items-center justify-between border-t border-[#dbe3ed] pt-3">
+                  <span className="text-[10px] tracking-[0.12em] text-[#91a0b3]">{text.length} CHARACTERS</span>
+                  <button className="atelier-start" disabled={busy || !text.trim()} onClick={() => void start()}>
+                    {busy ? "正在建立项目" : "开始编排"}
+                    <ArrowUpRight size={16} />
+                  </button>
+                </div>
+              </div>
+              <p className="max-w-[250px] text-[12px] leading-6 text-[#738299]">
+                调研、需求确认、结构板、初稿与视觉设计在同一条可中断流水线中完成。
+              </p>
+            </div>
+            {!ready && (
+              <button className="atelier-notice" onClick={() => router.push("/settings")}>
+                三套模型尚未配置完整
+                <ArrowUpRight size={14} />
               </button>
-              填完再开跑。
-            </p>
-          )}
-          {error && <p className="mt-3 text-center text-[13px] text-[#c41e3a]">{error}</p>}
-        </div>
+            )}
+            {error && <p className="mt-4 text-[12px] text-[#c53535]">{error}</p>}
+          </div>
+        </section>
       </main>
     </div>
   );

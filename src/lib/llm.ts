@@ -1,9 +1,17 @@
+import { Resvg } from "@resvg/resvg-js";
 import type { LlmProtocol, ModelConfig } from "./types";
+
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: "image/jpeg" | "image/png" | "image/webp" };
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | ChatContentPart[];
 }
+
+const svgExtractionCache = new Map<string, string>();
+const SVG_EXTRACTION_CACHE_LIMIT = 128;
 
 export interface CompleteChatOptions {
   maxTokens?: number;
@@ -16,6 +24,8 @@ export interface CompleteChatOptions {
     name: string;
     schema: Record<string, unknown>;
   };
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export type LlmProgressPhase =
@@ -164,6 +174,49 @@ function reportProgress(options: CompleteChatOptions | undefined, update: LlmPro
   }
 }
 
+function messageText(message: ChatMessage): string {
+  return typeof message.content === "string"
+    ? message.content
+    : message.content
+        .filter((part): part is Extract<ChatContentPart, { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join("\n");
+}
+
+function chatCompletionsContent(content: ChatMessage["content"]): unknown {
+  if (typeof content === "string") return content;
+  return content.map((part) => part.type === "text"
+    ? { type: "text", text: part.text }
+    : {
+        type: "image_url",
+        image_url: { url: `data:${part.mimeType};base64,${part.data}` },
+      });
+}
+
+function responsesContent(content: ChatMessage["content"]): unknown {
+  if (typeof content === "string") return content;
+  return content.map((part) => part.type === "text"
+    ? { type: "input_text", text: part.text }
+    : { type: "input_image", image_url: `data:${part.mimeType};base64,${part.data}` });
+}
+
+function messagesContent(content: ChatMessage["content"]): unknown {
+  if (typeof content === "string") return content;
+  return content.map((part) => part.type === "text"
+    ? { type: "text", text: part.text }
+    : {
+        type: "image",
+        source: { type: "base64", media_type: part.mimeType, data: part.data },
+      });
+}
+
+function geminiParts(content: ChatMessage["content"]): unknown[] {
+  if (typeof content === "string") return [{ text: content }];
+  return content.map((part) => part.type === "text"
+    ? { text: part.text }
+    : { inlineData: { mimeType: part.mimeType, data: part.data } });
+}
+
 async function readEventStreamText(
   response: Response,
   options: CompleteChatOptions | undefined,
@@ -257,6 +310,10 @@ export async function completeChat(
   const maxTokens = options?.maxTokens ?? 8192;
   const temperature = options?.temperature ?? 0.4;
   const protocol: LlmProtocol = config.protocol;
+  const timeoutSignal = AbortSignal.timeout(options?.timeoutMs ?? 180_000);
+  const signal = options?.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal;
   let response: Response;
   reportProgress(options, { phase: "request_sent" });
 
@@ -270,7 +327,10 @@ export async function completeChat(
       body: JSON.stringify({
         model: config.model,
         temperature,
-        messages,
+        messages: messages.map((message) => ({
+          role: message.role,
+          content: chatCompletionsContent(message.content),
+        })),
         max_tokens: maxTokens,
         response_format: options?.jsonSchema
           ? {
@@ -283,6 +343,7 @@ export async function completeChat(
             }
           : undefined,
       }),
+      signal,
     });
   } else if (protocol === "responses") {
     response = await fetch(joinUrl(config.baseUrl, "/v1/responses"), {
@@ -295,7 +356,7 @@ export async function completeChat(
         model: config.model,
         input: messages.map((message) => ({
           role: message.role,
-          content: message.content,
+          content: responsesContent(message.content),
         })),
         max_output_tokens: maxTokens,
         temperature,
@@ -313,11 +374,12 @@ export async function completeChat(
             }
           : undefined,
       }),
+      signal,
     });
   } else if (protocol === "messages") {
     const system = messages
       .filter((message) => message.role === "system")
-      .map((message) => message.content)
+      .map(messageText)
       .join("\n\n");
     const rest = messages.filter((message) => message.role !== "system");
     response = await fetch(joinUrl(config.baseUrl, "/v1/messages"), {
@@ -335,19 +397,20 @@ export async function completeChat(
         system: system || undefined,
         messages: rest.map((message) => ({
           role: message.role === "assistant" ? "assistant" : "user",
-          content: message.content,
+          content: messagesContent(message.content),
         })),
       }),
+      signal,
     });
   } else {
     const system = messages
       .filter((message) => message.role === "system")
-      .map((message) => message.content)
+      .map(messageText)
       .join("\n\n");
     const rest = messages.filter((message) => message.role !== "system");
     const contents = rest.map((message) => ({
       role: message.role === "assistant" ? "model" : "user",
-      parts: [{ text: message.content }],
+      parts: geminiParts(message.content),
     }));
     const url = new URL(
       joinUrl(config.baseUrl, `/v1beta/models/${encodeURIComponent(config.model)}:generateContent`),
@@ -366,6 +429,7 @@ export async function completeChat(
         contents,
         generationConfig: { temperature, maxOutputTokens: maxTokens },
       }),
+      signal,
     });
   }
 
@@ -398,6 +462,7 @@ export async function listModels(config: Pick<ModelConfig, "baseUrl" | "apiKey" 
     url.searchParams.set("key", config.apiKey);
     response = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${config.apiKey}` },
+      signal: AbortSignal.timeout(30_000),
     });
   } else if (config.protocol === "messages") {
     response = await fetch(joinUrl(config.baseUrl, "/v1/models"), {
@@ -406,10 +471,12 @@ export async function listModels(config: Pick<ModelConfig, "baseUrl" | "apiKey" 
         Authorization: `Bearer ${config.apiKey}`,
         "anthropic-version": "2023-06-01",
       },
+      signal: AbortSignal.timeout(30_000),
     });
   } else {
     response = await fetch(joinUrl(config.baseUrl, "/v1/models"), {
       headers: { Authorization: `Bearer ${config.apiKey}` },
+      signal: AbortSignal.timeout(30_000),
     });
   }
 
@@ -445,13 +512,63 @@ export function extractJsonObject(text: string): unknown {
 }
 
 export function extractSvg(text: string): string {
-  const match = text.match(/<svg\b[\s\S]*<\/svg>/i);
-  if (!match) {
-    throw new Error("模型输出里没有 SVG");
+  const cached = svgExtractionCache.get(text);
+  if (cached) return cached;
+  const candidates = collectSvgCandidates(text);
+  if (candidates.length === 0) {
+    throw new Error("模型输出里没有完整 SVG");
   }
-  let svg = match[0].trim();
+
+  let firstError: unknown;
+  for (const candidate of candidates) {
+    try {
+      const svg = validateSvgCandidate(candidate);
+      svgExtractionCache.set(text, svg);
+      while (svgExtractionCache.size > SVG_EXTRACTION_CACHE_LIMIT) {
+        const oldest = svgExtractionCache.keys().next().value;
+        if (typeof oldest !== "string") break;
+        svgExtractionCache.delete(oldest);
+      }
+      return svg;
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  throw firstError instanceof Error ? firstError : new Error("模型输出里没有可渲染 SVG");
+}
+
+function collectSvgCandidates(text: string): string[] {
+  const sources: string[] = [];
+  const fenced = text.matchAll(/```(?:svg|xml)?\s*([\s\S]*?)```/gi);
+  for (const match of fenced) sources.push(match[1] ?? "");
+  sources.push(text);
+
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    const starts = [...source.matchAll(/<svg\b/gi)]
+      .map((match) => match.index)
+      .filter((index): index is number => typeof index === "number");
+    for (const start of starts.reverse()) {
+      const closeStart = source.indexOf("</svg>", start);
+      if (closeStart < 0) continue;
+      const candidate = source.slice(start, closeStart + "</svg>".length).trim();
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    }
+  }
+  return candidates;
+}
+
+function validateSvgCandidate(input: string): string {
+  let svg = input.trim();
   const opening = svg.match(/^<svg\b[^>]*>/i)?.[0];
   if (!opening) throw new Error("SVG 根元素无效");
+  if ((svg.match(/<svg\b/gi) ?? []).length !== 1 || !/<\/svg>\s*$/i.test(svg)) {
+    throw new Error("SVG 必须只有一个完整根节点");
+  }
 
   const viewBox = readSvgAttribute(opening, "viewBox");
   if (!viewBox) {
@@ -474,11 +591,83 @@ export function extractSvg(text: string): string {
     throw new Error("SVG height 必须是 720");
   }
 
+  if (!readSvgAttribute(opening, "xmlns")) {
+    svg = svg.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+
   if (/<script\b/i.test(svg)) throw new Error("SVG 不允许包含 script");
+  if (/<foreignObject\b/i.test(svg)) throw new Error("SVG 不允许包含 foreignObject");
   if (/<image\b[^>]*(?:href|xlink:href)\s*=\s*["']https?:/i.test(svg)) {
     throw new Error("SVG 不允许引用外部图片");
   }
+  if (/待补充|待核实|占位|示意图区域|图表区域|预览|lorem\s+ipsum/i.test(svg)) {
+    throw new Error("SVG 包含未完成的占位文案");
+  }
+  if (/PRESENTED\s+BY|BUSINESS\s+PRESENTATION\s+PROPOSAL|STRICTLY\s+CONFIDENTIAL|STATUS:\s*PLANNING\s+DRAFT|CORE\s+PRINCIPLES|DOCUMENT\s+TYPE|DATE\s*&\s*EDITION|\b20\d{2}\s+EDITION\b/i.test(svg)) {
+    throw new Error("SVG 包含输入之外的模板元数据");
+  }
+
+  const visibleText = svg
+    .replace(/<defs\b[\s\S]*?<\/defs>/gi, " ")
+    .match(/<text\b[^>]*>[\s\S]*?<\/text>/gi)
+    ?.join(" ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&(?:#\d+|#x[\da-f]+|[a-z][\w.-]*);/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim() ?? "";
+  if (visibleText.length < 2) {
+    throw new Error("SVG 没有可见文字内容");
+  }
+
+  assertSvgRenders(svg, hasLikelyVisibleText(svg));
   return svg;
+}
+
+function hasLikelyVisibleText(svg: string): boolean {
+  return (svg.match(/<text\b[^>]*>[\s\S]*?<\/text>/gi) ?? []).some((element) => {
+    const opening = element.match(/^<text\b[^>]*>/i)?.[0] ?? "";
+    if (/\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?:\D|$))/i.test(opening)) {
+      return false;
+    }
+    const fill = readSvgAttribute(opening, "fill")
+      ?? opening.match(/\bfill\s*:\s*([^;"']+)/i)?.[1]?.trim()
+      ?? "black";
+    if (/^(?:none|transparent|white|#fff(?:fff)?|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))$/i.test(fill)) {
+      return false;
+    }
+    const content = element.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    if (!content) return false;
+    const fontSize = readSvgAttribute(opening, "font-size")
+      ?? opening.match(/\bfont-size\s*:\s*([\d.]+)/i)?.[1];
+    return !fontSize || Number.parseFloat(fontSize) >= 8;
+  });
+}
+
+function assertSvgRenders(svg: string, hasVisibleText: boolean): void {
+  try {
+    const renderer = new Resvg(svg, {
+      fitTo: { mode: "width", value: 320 },
+      font: { loadSystemFonts: false },
+      background: "white",
+      logLevel: "off",
+    });
+    const image = renderer.render();
+    const pixels = image.pixels;
+    let inkPixels = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const distanceFromWhite =
+        255 - pixels[index] + 255 - pixels[index + 1] + 255 - pixels[index + 2];
+      if (distanceFromWhite > 36) inkPixels += 1;
+    }
+    const minimumInk = Math.max(64, Math.floor(image.width * image.height * 0.001));
+    if (inkPixels < minimumInk && !hasVisibleText) {
+      throw new Error("SVG 渲染结果为空白");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "SVG 渲染结果为空白") throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`SVG 无法解析或渲染：${detail.replace(/\s+/g, " ").slice(0, 240)}`);
+  }
 }
 
 function readSvgAttribute(opening: string, name: string): string | null {
