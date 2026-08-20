@@ -1,18 +1,20 @@
 import { NextResponse } from "next/server";
-import { completeChat, extractJsonObject } from "@/lib/llm";
 import {
   applyAssumptionPatch,
-  applyPageEdit,
+  applyStructureProposal,
   applyPageOrder,
+  confirmDesignReference,
   confirmRequirements,
+  dismissStructureProposal,
+  enqueueStructureMessage,
+  enqueuePageMessage,
   enqueuePipeline,
   requestCancel,
 } from "@/lib/pipeline";
-import { PAGE_PATCH_SYSTEM } from "@/lib/prompts";
 import { serializeProject } from "@/lib/serialize";
-import { requireTextConfig } from "@/lib/settings";
-import { getProject, getProjectPage, listEvents, listPages, parseAssumptions } from "@/lib/store";
+import { getProject, listEvents, listPages } from "@/lib/store";
 import type { ProjectAssumptions } from "@/lib/types";
+import type { StructureChatScope } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -28,67 +30,79 @@ export async function POST(
     message?: string;
     surface?: "search" | "draft" | "design";
     pageIds?: string[];
+    scope?: StructureChatScope;
+    scopeId?: string;
+    proposalId?: string;
+    mode?: "preset" | "upload";
+    styleId?: string;
+    colorPreference?: string;
   };
 
   try {
+    let responseStatus = 200;
     getProject(id);
     if (body.type === "resume") {
       enqueuePipeline(id);
+      responseStatus = 202;
     } else if (body.type === "cancel") {
       requestCancel(id);
     } else if (body.type === "updateAssumptions") {
       await applyAssumptionPatch(id, body.assumptions ?? {});
+      responseStatus = 202;
     } else if (body.type === "confirmRequirements") {
       confirmRequirements(id, body.assumptions ?? {});
+      responseStatus = 202;
     } else if (body.type === "reorderPages") {
       await applyPageOrder(id, body.pageIds ?? []);
+      responseStatus = 202;
     } else if (body.type === "chat") {
       if (!body.pageId || !body.message?.trim()) {
         return NextResponse.json({ error: "缺少页或内容" }, { status: 400 });
       }
-      const page = getProjectPage(id, body.pageId);
-      const project = getProject(id);
-      const raw = await completeChat(requireTextConfig(), [
-        { role: "system", content: PAGE_PATCH_SYSTEM },
-        {
-          role: "user",
-          content: JSON.stringify({
-            message: body.message,
-            surface: body.surface ?? "design",
-            page: {
-              title: page.title,
-              bullets: JSON.parse(page.bullets_json || "[]"),
-              speaker_notes: page.speaker_notes,
-            },
-            assumptions: parseAssumptions(project),
-          }),
-        },
-      ]);
-      const patch = extractJsonObject(raw) as {
-        title?: string | null;
-        content_outline?: string[] | null;
-        speaker_notes?: string | null;
-        render_instruction?: string;
-      };
-      const regen =
-        body.surface === "design"
-          ? "design"
-          : body.surface === "draft"
-            ? "draft"
-            : "all";
-      await applyPageEdit(id, body.pageId, {
-        title: patch.title || undefined,
-        bullets: patch.content_outline || undefined,
-        speakerNotes: patch.speaker_notes || undefined,
-        instruction: patch.render_instruction || body.message,
-        regenerate: regen,
+      enqueuePageMessage(id, {
+        pageId: body.pageId,
+        message: body.message,
+        surface: body.surface ?? "design",
       });
+      responseStatus = 202;
+    } else if (body.type === "structureChat") {
+      if (!body.message?.trim() || !body.scope) {
+        return NextResponse.json({ error: "缺少结构修改内容或范围" }, { status: 400 });
+      }
+      enqueueStructureMessage(id, {
+        message: body.message,
+        scope: body.scope,
+        scopeId: body.scopeId,
+      });
+      responseStatus = 202;
+    } else if (body.type === "applyStructureProposal") {
+      if (!body.proposalId) {
+        return NextResponse.json({ error: "缺少结构提案" }, { status: 400 });
+      }
+      await applyStructureProposal(id, body.proposalId);
+      responseStatus = 202;
+    } else if (body.type === "dismissStructureProposal") {
+      if (!body.proposalId) {
+        return NextResponse.json({ error: "缺少结构提案" }, { status: 400 });
+      }
+      dismissStructureProposal(id, body.proposalId);
+    } else if (body.type === "confirmDesignReference") {
+      if (!body.mode) {
+        return NextResponse.json({ error: "请选择设计参考方式" }, { status: 400 });
+      }
+      await confirmDesignReference(id, {
+        mode: body.mode,
+        styleId: body.styleId,
+        colorPreference: body.colorPreference,
+      });
+      responseStatus = 202;
     } else {
       return NextResponse.json({ error: "未知动作" }, { status: 400 });
     }
 
     return NextResponse.json(
       serializeProject(getProject(id), listPages(id), listEvents(id)),
+      { status: responseStatus },
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "动作失败";

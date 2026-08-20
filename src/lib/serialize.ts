@@ -1,4 +1,9 @@
 import { parseAssumptions } from "./store";
+import {
+  getDeckPlan,
+  getLatestStructureProposal,
+  getReferenceState,
+} from "./project-artifacts";
 import { getStylePack, STYLE_PACKS } from "./styles";
 import type { EventRow, PageRow, ProjectRow } from "./types";
 
@@ -9,6 +14,16 @@ export function serializeProject(project: ProjectRow, pages: PageRow[], events: 
     url: string;
     snippet?: string;
   }>;
+  const reference = getReferenceState(project.id, project.style_id);
+  const effectiveReference = reference.status === "pending" && pages.some((page) => page.design_status === "ready")
+    ? {
+        ...reference,
+        status: "confirmed" as const,
+        mode: "preset" as const,
+        confirmedAt: project.updated_at,
+        updatedAt: project.updated_at,
+      }
+    : reference;
   return {
     id: project.id,
     title: project.title,
@@ -31,6 +46,18 @@ export function serializeProject(project: ProjectRow, pages: PageRow[], events: 
     updatedAt: project.updated_at,
     pages: pages.map(serializePage),
     events: events.map(serializeEvent),
+    deckPlan: getDeckPlan(project.id),
+    designReference: effectiveReference,
+    structureProposal: getLatestStructureProposal(project.id),
+    structureChat: events
+      .filter((event) => event.kind === "structure-chat-user" || event.kind === "structure-chat-assistant")
+      .slice(-20)
+      .map((event) => ({
+        id: event.id,
+        role: event.kind === "structure-chat-user" ? "user" : "assistant",
+        text: event.detail || event.title,
+        createdAt: event.created_at,
+      })),
   };
 }
 

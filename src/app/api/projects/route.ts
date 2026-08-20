@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { enqueuePipeline } from "@/lib/pipeline";
 import { serializeProjectSummary } from "@/lib/serialize";
-import { getSettings } from "@/lib/settings";
+import { getSettings, isAppConfigured } from "@/lib/settings";
 import { createProject, listProjects } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -20,17 +20,7 @@ export async function POST(request: Request) {
   }
   try {
     const settings = getSettings();
-    if (
-      !settings.text.baseUrl ||
-      !settings.text.apiKey ||
-      !settings.text.model ||
-      !settings.svg.baseUrl ||
-      !settings.svg.apiKey ||
-      !settings.svg.model ||
-      !settings.search.baseUrl ||
-      !settings.search.apiKey ||
-      !settings.search.model
-    ) {
+    if (!isAppConfigured(settings)) {
       return NextResponse.json({ error: "先在设置里配好文本、SVG 和搜索模型" }, { status: 400 });
     }
     const project = createProject(requestText);

@@ -104,3 +104,9 @@ export function requireSearch(): ModelConfig {
   }
   return settings.search;
 }
+
+export function isAppConfigured(settings = getSettings()): boolean {
+  return [settings.text, settings.svg, settings.search].every(
+    (config) => Boolean(config.baseUrl.trim() && config.apiKey.trim() && config.model.trim()),
+  );
+}

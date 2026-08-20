@@ -1,5 +1,5 @@
-import { extractJsonObject } from "./llm";
-import type { OutlinePage, PageType, PptOutline } from "./types";
+import { extractJsonObject } from "./llm.ts";
+import type { OutlinePage, PageType, PptOutline } from "./types.ts";
 
 export function parseOutline(text: string): PptOutline {
   const boxed = text.match(/\[PPT_OUTLINE\]([\s\S]*?)\[\/PPT_OUTLINE\]/);
@@ -59,6 +59,12 @@ export function flattenOutline(outline: PptOutline): FlattenedPage[] {
     },
   ];
   for (const part of outline.parts) {
+    pages.push({
+      pageType: "section",
+      sectionTitle: part.part_title,
+      title: part.part_title,
+      bullets: [],
+    });
     for (const page of part.pages) {
       pages.push({
         pageType: "content",
@@ -75,6 +81,50 @@ export function flattenOutline(outline: PptOutline): FlattenedPage[] {
     bullets: outline.end_page.content,
   });
   return pages;
+}
+
+export function pagesToOutline(input: Array<{
+  pageType: PageType;
+  sectionTitle: string | null;
+  title: string;
+  bullets: string[];
+}>): PptOutline {
+  const cover = input.find((page) => page.pageType === "cover");
+  const toc = input.find((page) => page.pageType === "toc");
+  const end = [...input].reverse().find((page) => page.pageType === "end");
+  if (!cover || !toc || !end) throw new Error("结构必须包含封面、目录和结束页");
+
+  const parts: PptOutline["parts"] = [];
+  let active: PptOutline["parts"][number] | null = null;
+  for (const page of input) {
+    if (page.pageType === "section") {
+      active = { part_title: page.title, pages: [] };
+      parts.push(active);
+      continue;
+    }
+    if (page.pageType !== "content") continue;
+    const sectionTitle = page.sectionTitle || active?.part_title || "核心内容";
+    if (!active || active.part_title !== sectionTitle) {
+      active = { part_title: sectionTitle, pages: [] };
+      parts.push(active);
+    }
+    active.pages.push({ title: page.title, content: page.bullets });
+  }
+  if (!parts.length) throw new Error("结构至少需要一个章节和内容页");
+
+  return {
+    cover: {
+      title: cover.title,
+      sub_title: cover.bullets[0] || "",
+      content: cover.bullets.slice(1),
+    },
+    table_of_contents: {
+      title: toc.title,
+      content: parts.map((part) => part.part_title),
+    },
+    parts,
+    end_page: { title: end.title, content: end.bullets },
+  };
 }
 
 export function pageCode(index: number): string {

@@ -108,7 +108,7 @@ test("model gateway HTML errors are reduced to a readable 524 message", async ()
 });
 
 test("extractSvg fills missing 1280x720 attributes", () => {
-  const svg = extractSvg('<svg xmlns="http://www.w3.org/2000/svg"><rect /></svg>');
+  const svg = extractSvg('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#f5f7fa"/><text x="80" y="120" font-size="60">页面标题</text></svg>');
   assert.match(svg, /viewBox="0 0 1280 720"/);
   assert.match(svg, /width="1280"/);
   assert.match(svg, /height="720"/);
@@ -121,13 +121,45 @@ test("extractSvg rejects a wrong canvas", () => {
   );
 });
 
-test("extractSvg rejects scripts and external images", () => {
+test("extractSvg rejects unsafe or unfinished slide content", () => {
   assert.throws(
     () => extractSvg('<svg viewBox="0 0 1280 720" width="1280" height="720"><script /></svg>'),
     /不允许包含 script/,
   );
   assert.throws(
+    () => extractSvg('<svg viewBox="0 0 1280 720" width="1280" height="720"><foreignObject /></svg>'),
+    /不允许包含 foreignObject/,
+  );
+  assert.throws(
     () => extractSvg('<svg viewBox="0 0 1280 720" width="1280" height="720"><image href="https://example.com/a.png" /></svg>'),
     /不允许引用外部图片/,
+  );
+  assert.throws(
+    () => extractSvg('<svg viewBox="0 0 1280 720" width="1280" height="720"><text>公司信息待补充</text></svg>'),
+    /未完成的占位文案/,
+  );
+  assert.throws(
+    () => extractSvg('<svg viewBox="0 0 1280 720" width="1280" height="720"><text>PRESENTED BY</text></svg>'),
+    /输入之外的模板元数据/,
+  );
+});
+
+test("extractSvg recovers the real root after model reasoning mentions an SVG tag", () => {
+  const output = `<svg height="720" width="1280" viewBox="0 0 1280 720">thinking about Business & Design
+<svg viewBox="0 0 1280 720" width="1280" height="720"><rect width="1280" height="720" fill="#f5f7fa"/><text x="80" y="120" font-size="60">真实设计稿</text></svg>`;
+  const svg = extractSvg(output);
+  assert.equal((svg.match(/<svg\b/gi) ?? []).length, 1);
+  assert.match(svg, /真实设计稿/);
+  assert.doesNotMatch(svg, /thinking about/);
+});
+
+test("extractSvg rejects malformed XML and visually blank slides", () => {
+  assert.throws(
+    () => extractSvg('<svg viewBox="0 0 1280 720" width="1280" height="720"><text>A & B</text></svg>'),
+    /无法解析或渲染/,
+  );
+  assert.throws(
+    () => extractSvg('<svg viewBox="0 0 1280 720" width="1280" height="720"><rect width="1280" height="720" fill="white"/><text fill="white">不可见标题</text></svg>'),
+    /渲染结果为空白/,
   );
 });

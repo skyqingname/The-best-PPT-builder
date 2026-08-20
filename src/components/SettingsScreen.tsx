@@ -2,6 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  ArrowLeft,
+  FileText,
+  KeyRound,
+  Palette,
+  RefreshCw,
+  Save,
+  Search,
+  type LucideIcon,
+} from "lucide-react";
 import type { AppSettings, LlmProtocol } from "@/lib/types";
 
 const PROTOCOLS: { id: LlmProtocol; label: string; hint: string }[] = [
@@ -76,64 +86,83 @@ export default function SettingsScreen() {
   }
 
   return (
-    <div className="min-h-dvh bg-[#f6f7f8] text-[#1d1d1f]">
-      <div className="mx-auto max-w-[880px] px-5 py-8">
-        <div className="mb-6 flex items-center justify-between">
+    <div className="settings-shell min-h-dvh text-[#17243a]">
+      <form
+        className="mx-auto max-w-[1060px] px-5 py-8 md:py-12"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <div className="settings-hero mb-9 flex items-end justify-between">
           <div>
-            <button className="text-[13px] text-black/40" onClick={() => router.push("/")}>
-              ← 返回
+            <button type="button" className="settings-back" onClick={() => router.push("/")}>
+              <ArrowLeft size={15} />
+              返回工作台
             </button>
-            <h1 className="mt-2 text-[28px] font-semibold">模型与搜索</h1>
-            <p className="mt-1 text-[13px] text-[#6e6e73]">
+            <div className="mt-8 text-[10px] font-semibold tracking-[0.22em] text-[#2f80ff]">SYSTEM CONFIGURATION</div>
+            <h1 className="mt-2 text-[clamp(36px,5vw,62px)] leading-none font-semibold tracking-[-0.055em]">模型控制台</h1>
+            <p className="mt-4 max-w-[620px] text-[13px] leading-6 text-[#718096]">
               文本、SVG、搜索各自独立配置。填完地址就能拉模型，Key 只存在本机。
             </p>
           </div>
           <button
-            onClick={() => void save()}
+            type="submit"
             disabled={busy}
-            className="rounded-full bg-[#0b84ff] px-5 py-2 text-[13px] font-medium text-white"
+            className="settings-save"
           >
-            保存
+            <Save size={15} />
+            <span className="settings-save-label">{busy ? "保存中" : "保存配置"}</span>
           </button>
         </div>
 
-        <ModelCard
-          title="文本模型"
-          hint="调研、假设、大纲、页摘要、改稿"
-          value={settings.text}
-          models={textModels}
-          onChange={(text) => setSettings({ ...settings, text })}
-          onPull={() => void pull("text")}
-        />
-        <ModelCard
-          title="SVG 模型"
-          hint="策划稿和设计稿出图"
-          value={settings.svg}
-          models={svgModels}
-          onChange={(svg) => setSettings({ ...settings, svg })}
-          onPull={() => void pull("svg")}
-        />
-        <ModelCard
-          title="搜索模型"
-          hint="背景调研与逐页资料检索；请选择具备联网能力的模型"
-          value={settings.search}
-          models={searchModels}
-          onChange={(search) => setSettings({ ...settings, search })}
-          onPull={() => void pull("search")}
-          notice={
-            /grok/i.test(settings.search.model) && settings.search.protocol !== "responses"
-              ? "Grok 联网搜索必须选择 OpenAI Responses 协议"
-              : undefined
-          }
-        />
+        <div className="grid gap-4">
+          <ModelCard
+            index="01"
+            icon={FileText}
+            title="文本模型"
+            hint="需求分析、大纲、意图解析与内容决策"
+            value={settings.text}
+            models={textModels}
+            onChange={(text) => setSettings({ ...settings, text })}
+            onPull={() => void pull("text")}
+          />
+          <ModelCard
+            index="02"
+            icon={Palette}
+            title="SVG 模型"
+            hint="1280 × 720 初稿编排与视觉设计"
+            value={settings.svg}
+            models={svgModels}
+            onChange={(svg) => setSettings({ ...settings, svg })}
+            onPull={() => void pull("svg")}
+          />
+          <ModelCard
+            index="03"
+            icon={Search}
+            title="搜索模型"
+            hint="项目背景与内容页公开资料检索"
+            value={settings.search}
+            models={searchModels}
+            onChange={(search) => setSettings({ ...settings, search })}
+            onPull={() => void pull("search")}
+            notice={
+              /grok/i.test(settings.search.model) && settings.search.protocol !== "responses"
+                ? "Grok 联网搜索必须选择 OpenAI Responses 协议"
+                : undefined
+            }
+          />
+        </div>
 
-        {message && <p className="mt-4 text-[13px] text-[#0b84ff]">{message}</p>}
-      </div>
+        {message && <p className="settings-message">{message}</p>}
+      </form>
     </div>
   );
 }
 
 function ModelCard({
+  index,
+  icon: Glyph,
   title,
   hint,
   value,
@@ -142,6 +171,8 @@ function ModelCard({
   onPull,
   notice,
 }: {
+  index: string;
+  icon: LucideIcon;
   title: string;
   hint: string;
   value: AppSettings["text"];
@@ -151,15 +182,21 @@ function ModelCard({
   notice?: string;
 }) {
   return (
-    <section className="mb-4 rounded-[20px] border border-[#e5e5e5] bg-white p-5">
-      <h2 className="text-[16px] font-semibold">{title}</h2>
-      <p className="mt-1 text-[12px] text-[#6e6e73]">{hint}</p>
+    <section className="settings-card">
+      <div className="settings-card-heading">
+        <div className="settings-card-index">{index}</div>
+        <div className="settings-card-icon"><Glyph size={18} /></div>
+        <div>
+          <h2 className="text-[17px] font-semibold tracking-[-0.02em]">{title}</h2>
+          <p className="mt-1 text-[11px] text-[#7a889c]">{hint}</p>
+        </div>
+      </div>
       {notice && (
         <p className="mt-2 rounded-[10px] bg-[#fff4e5] px-3 py-2 text-[12px] text-[#9a5b00]">
           {notice}
         </p>
       )}
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
+      <div className="mt-6 grid gap-4 md:grid-cols-2">
         <Field
           label="Base URL"
           value={value.baseUrl}
@@ -172,10 +209,10 @@ function ModelCard({
           type="password"
           onChange={(apiKey) => onChange({ ...value, apiKey })}
         />
-        <label className="block text-[12px] text-[#6e6e73]">
+        <label className="settings-field">
           协议
           <select
-            className="mt-1 w-full rounded-[12px] border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[14px] text-[#1d1d1f]"
+            className="settings-input"
             value={value.protocol}
             onChange={(event) =>
               onChange({ ...value, protocol: event.target.value as LlmProtocol })
@@ -189,15 +226,16 @@ function ModelCard({
           </select>
         </label>
         <div>
-          <div className="mb-1 flex items-center justify-between text-[12px] text-[#6e6e73]">
+          <div className="mb-2 flex items-center justify-between text-[11px] font-medium text-[#66758a]">
             <span>模型</span>
-            <button className="text-[#0b84ff]" onClick={onPull} type="button">
+            <button className="flex items-center gap-1.5 text-[#2f80ff]" onClick={onPull} type="button">
+              <RefreshCw size={12} />
               拉取模型
             </button>
           </div>
           {models.length > 0 && (
             <select
-              className="mb-2 w-full rounded-[12px] border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[14px]"
+              className="settings-input mb-2"
               value={value.model}
               onChange={(event) => onChange({ ...value, model: event.target.value })}
             >
@@ -210,7 +248,7 @@ function ModelCard({
             </select>
           )}
           <input
-            className="w-full rounded-[12px] border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[14px]"
+            className="settings-input"
             placeholder="或手填模型名"
             value={value.model}
             onChange={(event) => onChange({ ...value, model: event.target.value })}
@@ -235,10 +273,10 @@ function Field({
   type?: "text" | "password";
 }) {
   return (
-    <label className="block text-[12px] text-[#6e6e73]">
-      {label}
+    <label className="settings-field">
+      <span className="flex items-center gap-1.5">{type === "password" && <KeyRound size={12} />}{label}</span>
       <input
-        className="mt-1 w-full rounded-[12px] border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[14px] text-[#1d1d1f]"
+        className="settings-input"
         type={type}
         autoComplete={type === "password" ? "off" : undefined}
         value={value}

@@ -1,5 +1,6 @@
 import { completeChat, extractJsonObject } from "./llm.ts";
 import type { LlmProgressUpdate } from "./llm.ts";
+import { isTransientModelError } from "./model-gateway.ts";
 import { SEARCH_MODEL_SYSTEM } from "./prompts.ts";
 import type { ModelConfig, SearchHit } from "./types.ts";
 
@@ -11,7 +12,11 @@ interface WebSearchOptions {
   onProgress?: (update: LlmProgressUpdate) => void;
   shouldCancel?: () => boolean;
   retryDelaysMs?: number[];
+  signal?: AbortSignal;
 }
+
+const urlContentCache = new Map<string, { expiresAt: number; hit: SearchHit }>();
+const URL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const SEARCH_RESULTS_SCHEMA: Record<string, unknown> = {
   type: "object",
@@ -98,25 +103,30 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-async function hydrateHit(hit: SearchHit): Promise<SearchHit> {
+async function hydrateHit(hit: SearchHit, signal?: AbortSignal): Promise<SearchHit> {
   if (hit.content.trim().length >= 400 || !hit.url.startsWith("http")) {
     return hit;
   }
+  const cached = urlContentCache.get(hit.url);
+  if (cached && cached.expiresAt > Date.now()) return cached.hit;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
     const response = await fetch(hit.url, {
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
       headers: { "User-Agent": "ppt-agent/0.1" },
     });
-    clearTimeout(timer);
     if (!response.ok) return hit;
     const html = await response.text();
     const text = stripHtml(html).slice(0, 6000);
     if (text.length < 80) return hit;
-    return { ...hit, content: text };
+    const hydrated = { ...hit, content: text };
+    urlContentCache.set(hit.url, { expiresAt: Date.now() + URL_CACHE_TTL_MS, hit: hydrated });
+    return hydrated;
   } catch {
     return hit;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -148,6 +158,7 @@ export async function webSearch(
           maxToolCalls: config.protocol === "responses" ? 3 : undefined,
           onProgress: options?.onProgress,
           jsonSchema: { name: "search_results", schema: SEARCH_RESULTS_SCHEMA },
+          signal: options?.signal,
         },
       );
       break;
@@ -166,7 +177,7 @@ export async function webSearch(
       } catch {
         // Retry progress must not change search behavior.
       }
-      await waitForRetry(delayMs, options?.shouldCancel);
+      await waitForRetry(delayMs, options?.shouldCancel, options?.signal);
     }
   }
   let hits: SearchHit[];
@@ -175,25 +186,36 @@ export async function webSearch(
   } catch {
     throw new Error("搜索模型没有返回可解析的来源 JSON");
   }
-  const hydrated: SearchHit[] = [];
-  for (const hit of hits.slice(0, 5)) {
-    hydrated.push(await hydrateHit(hit));
+  const selected = hits.slice(0, 5);
+  const hydrationTargets = selected
+    .map((hit, index) => ({ hit, index }))
+    .filter(({ hit }) => hit.content.trim().length < 400 && hit.url.startsWith("http"))
+    .slice(0, 2);
+  const hydrated = await Promise.all(
+    hydrationTargets.map(({ hit }) => hydrateHit(hit, options?.signal)),
+  );
+  for (const [targetIndex, target] of hydrationTargets.entries()) {
+    selected[target.index] = hydrated[targetIndex];
   }
-  return hydrated;
+  return selected;
 }
 
 function isRetryableSearchError(message: string): boolean {
-  return /\b(?:429|502|503|504|524)\b|at capacity|high demand|rate[ -]?limit|temporar(?:y|ily) unavailable|overloaded|timed?\s*out|容量|限流|繁忙|暂时不可用|超时/i.test(message);
+  return isTransientModelError(message);
 }
 
-async function waitForRetry(delayMs: number, shouldCancel?: () => boolean): Promise<void> {
+async function waitForRetry(
+  delayMs: number,
+  shouldCancel?: () => boolean,
+  signal?: AbortSignal,
+): Promise<void> {
   const deadline = Date.now() + Math.max(0, delayMs);
   while (Date.now() < deadline) {
-    if (shouldCancel?.()) throw new Error("CANCELLED");
+    if (shouldCancel?.() || signal?.aborted) throw new Error("CANCELLED");
     const remaining = deadline - Date.now();
     await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)));
   }
-  if (shouldCancel?.()) throw new Error("CANCELLED");
+  if (shouldCancel?.() || signal?.aborted) throw new Error("CANCELLED");
 }
 
 export function compactHits(hits: SearchHit[], limit = 6): SearchHit[] {
