@@ -1,4 +1,5 @@
 import { getDb, newId, nowIso } from "./db";
+import { parseAssumptionsJson } from "./assumptions";
 import type {
   EventRow,
   PageRow,
@@ -94,6 +95,14 @@ export function getPage(pageId: string): PageRow {
   return row;
 }
 
+export function getProjectPage(projectId: string, pageId: string): PageRow {
+  const row = getDb()
+    .prepare("SELECT * FROM pages WHERE id = ? AND project_id = ?")
+    .get(pageId, projectId) as PageRow | undefined;
+  if (!row) throw new Error("页面不存在或不属于当前项目");
+  return row;
+}
+
 export function insertPage(input: {
   projectId: string;
   pageCode: string;
@@ -169,6 +178,28 @@ export function updatePage(
   return getPage(pageId);
 }
 
+export function reorderPages(projectId: string, orderedPageIds: string[]): PageRow[] {
+  const current = listPages(projectId);
+  const currentIds = new Set(current.map((page) => page.id));
+  if (
+    orderedPageIds.length !== current.length ||
+    new Set(orderedPageIds).size !== orderedPageIds.length ||
+    orderedPageIds.some((id) => !currentIds.has(id))
+  ) {
+    throw new Error("页面顺序与当前项目不匹配");
+  }
+
+  const update = getDb().prepare(
+    "UPDATE pages SET sort_order = ?, page_code = ?, updated_at = ? WHERE id = ? AND project_id = ?",
+  );
+  getDb().transaction(() => {
+    orderedPageIds.forEach((pageId, index) => {
+      update.run(index, `page-${String(index + 1).padStart(2, "0")}`, nowIso(), pageId, projectId);
+    });
+  })();
+  return listPages(projectId);
+}
+
 export function deletePagesNotIn(projectId: string, keepIds: string[]) {
   if (keepIds.length === 0) {
     getDb().prepare("DELETE FROM pages WHERE project_id = ?").run(projectId);
@@ -220,22 +251,8 @@ export function listEvents(projectId: string, after?: string): EventRow[] {
 }
 
 export function parseAssumptions(project: ProjectRow): ProjectAssumptions {
-  try {
-    const parsed = JSON.parse(project.assumptions_json) as Partial<ProjectAssumptions>;
-    return {
-      pageCount: parsed.pageCount || project.page_count_target,
-      audience: parsed.audience || "",
-      purpose: parsed.purpose || "",
-      styleId: parsed.styleId || project.style_id,
-      questions: parsed.questions || [],
-    };
-  } catch {
-    return {
-      pageCount: project.page_count_target,
-      audience: "",
-      purpose: "",
-      styleId: project.style_id,
-      questions: [],
-    };
-  }
+  return parseAssumptionsJson(project.assumptions_json, {
+    pageCount: project.page_count_target,
+    styleId: project.style_id,
+  });
 }

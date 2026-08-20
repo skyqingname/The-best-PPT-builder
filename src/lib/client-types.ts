@@ -10,6 +10,7 @@ export interface AssumptionQuestionDTO {
   label: string;
   value: string;
   reason: string;
+  options: string[];
 }
 
 export interface AssumptionsDTO {
@@ -66,6 +67,8 @@ export interface ProjectDTO {
   style: StyleDTO;
   styles: StyleDTO[];
   assumptions: AssumptionsDTO;
+  requirementsReady: boolean;
+  researchSources: SourceDTO[];
   outlineReady: boolean;
   errorText: string | null;
   createdAt: string;

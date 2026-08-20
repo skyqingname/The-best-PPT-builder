@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { enqueuePipeline, isRunning } from "@/lib/pipeline";
 import { serializeProject } from "@/lib/serialize";
 import { getProject, listEvents, listPages } from "@/lib/store";
 
@@ -11,6 +12,9 @@ export async function GET(
   const { id } = await context.params;
   try {
     const project = getProject(id);
+    if (project.status === "running" && !isRunning(id)) {
+      enqueuePipeline(id);
+    }
     return NextResponse.json(
       serializeProject(project, listPages(id), listEvents(id)),
     );

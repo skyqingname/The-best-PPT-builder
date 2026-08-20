@@ -23,10 +23,14 @@ export default function HomeScreen() {
         setReady(
           Boolean(
             settings?.text?.apiKey &&
+              settings?.text?.baseUrl &&
               settings?.text?.model &&
               settings?.svg?.apiKey &&
+              settings?.svg?.baseUrl &&
               settings?.svg?.model &&
-              settings?.searchApiKey,
+              settings?.search?.apiKey &&
+              settings?.search?.baseUrl &&
+              settings?.search?.model,
           ),
         );
       });
@@ -126,7 +130,7 @@ export default function HomeScreen() {
           </div>
           {!ready && (
             <p className="mt-4 text-center text-[13px] text-[#b45309]">
-              还没配模型或搜索 Key。先去
+              三套模型还没配置完整。先去
               <button className="mx-1 underline" onClick={() => router.push("/settings")}>
                 设置
               </button>
