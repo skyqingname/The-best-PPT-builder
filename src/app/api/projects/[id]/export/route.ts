@@ -11,9 +11,20 @@ export async function GET(
   try {
     const project = getProject(id);
     const pages = listPages(id);
-    const svgs = pages
-      .map((page) => page.design_svg || page.draft_svg)
-      .filter((item) => item.trim().length > 0);
+    const incomplete = pages.filter(
+      (page) => page.design_status !== "ready" || !page.design_svg.trim(),
+    );
+    if (!pages.length || incomplete.length) {
+      return new Response(
+        JSON.stringify({
+          error: !pages.length
+            ? "项目还没有页面"
+            : `还有 ${incomplete.length} 页设计稿未完成，暂不能导出`,
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    const svgs = pages.map((page) => page.design_svg);
     const buffer = await buildPptx(svgs);
     const filename = `${project.title || "ppt-agent"}.pptx`.replace(/[\\/:*?"<>|]/g, "_");
     return new Response(new Uint8Array(buffer), {

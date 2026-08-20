@@ -5,6 +5,36 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface CompleteChatOptions {
+  maxTokens?: number;
+  temperature?: number;
+  webSearch?: boolean;
+  stream?: boolean;
+  maxToolCalls?: number;
+  onProgress?: (update: LlmProgressUpdate) => void;
+  jsonSchema?: {
+    name: string;
+    schema: Record<string, unknown>;
+  };
+}
+
+export type LlmProgressPhase =
+  | "request_sent"
+  | "response_started"
+  | "tool_running"
+  | "output_streaming"
+  | "retrying"
+  | "completed";
+
+export interface LlmProgressUpdate {
+  phase: LlmProgressPhase;
+  tool?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  message?: string;
+}
+
 function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
@@ -83,14 +113,142 @@ function extractTextFromUnknown(data: unknown): string {
 }
 
 async function readError(response: Response): Promise<string> {
-  const text = await response.text();
-  return text.slice(0, 800) || response.statusText;
+  if (response.status === 524) {
+    return "上游网关等待模型超时";
+  }
+
+  const raw = await response.text();
+  try {
+    const data = JSON.parse(raw) as {
+      error?: { message?: unknown } | string;
+      message?: unknown;
+      detail?: unknown;
+    };
+    const message =
+      (typeof data.error === "object" && typeof data.error?.message === "string"
+        ? data.error.message
+        : typeof data.error === "string"
+          ? data.error
+          : typeof data.message === "string"
+            ? data.message
+            : typeof data.detail === "string"
+              ? data.detail
+              : "");
+    if (message.trim()) return message.trim().slice(0, 500);
+  } catch {
+    // Non-JSON gateway errors are normalized below.
+  }
+
+  if (/<!doctype\s+html|<html\b/i.test(raw)) {
+    return "上游网关返回 HTML 错误页";
+  }
+  return raw.replace(/\s+/g, " ").trim().slice(0, 500) || response.statusText;
+}
+
+function streamErrorMessage(payload: Record<string, unknown>): string {
+  const error = payload.error;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  const message = payload.message;
+  return typeof message === "string" ? message : "模型流式响应失败";
+}
+
+function reportProgress(options: CompleteChatOptions | undefined, update: LlmProgressUpdate) {
+  try {
+    options?.onProgress?.(update);
+  } catch {
+    // Progress reporting must never fail the model request.
+  }
+}
+
+async function readEventStreamText(
+  response: Response,
+  options: CompleteChatOptions | undefined,
+): Promise<string> {
+  if (!response.body) throw new Error("模型流式响应为空");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let deltaText = "";
+  let finalText = "";
+  const reported = new Set<LlmProgressPhase>();
+
+  const reportOnce = (update: LlmProgressUpdate): void => {
+    if (reported.has(update.phase)) return;
+    reported.add(update.phase);
+    reportProgress(options, update);
+  };
+
+  const consumeEvent = (block: string): void => {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") return;
+
+    let payload: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(data) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      payload = parsed as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    const type = typeof payload.type === "string" ? payload.type : "";
+    if (type === "error") {
+      throw new Error(streamErrorMessage(payload));
+    }
+    const item = payload.item;
+    const itemType = item && typeof item === "object"
+      ? (item as { type?: unknown }).type
+      : undefined;
+    if (type.includes("web_search_call") || itemType === "web_search_call") {
+      reportOnce({ phase: "tool_running", tool: "web_search" });
+    }
+    if (type === "response.output_text.delta" && typeof payload.delta === "string") {
+      reportOnce({ phase: "output_streaming" });
+      deltaText += payload.delta;
+      return;
+    }
+    if (type === "response.output_text.done" && typeof payload.text === "string") {
+      finalText = payload.text;
+      return;
+    }
+    if (type === "response.completed" && payload.response) {
+      finalText = extractTextFromUnknown(payload.response);
+      return;
+    }
+
+    const choices = payload.choices;
+    if (Array.isArray(choices) && choices[0] && typeof choices[0] === "object") {
+      const delta = (choices[0] as { delta?: { content?: unknown } }).delta;
+      if (typeof delta?.content === "string") deltaText += delta.content;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) consumeEvent(block);
+    if (done) break;
+  }
+  if (buffer.trim()) consumeEvent(buffer);
+  return deltaText || finalText;
 }
 
 export async function completeChat(
   config: ModelConfig,
   messages: ChatMessage[],
-  options?: { maxTokens?: number; temperature?: number },
+  options?: CompleteChatOptions,
 ): Promise<string> {
   if (!config.baseUrl.trim() || !config.apiKey.trim() || !config.model.trim()) {
     throw new Error("模型未配置完整：需要 Base URL、API Key 和模型名");
@@ -100,6 +258,7 @@ export async function completeChat(
   const temperature = options?.temperature ?? 0.4;
   const protocol: LlmProtocol = config.protocol;
   let response: Response;
+  reportProgress(options, { phase: "request_sent" });
 
   if (protocol === "chat_completions") {
     response = await fetch(joinUrl(config.baseUrl, "/v1/chat/completions"), {
@@ -113,12 +272,19 @@ export async function completeChat(
         temperature,
         messages,
         max_tokens: maxTokens,
+        response_format: options?.jsonSchema
+          ? {
+              type: "json_schema",
+              json_schema: {
+                name: options.jsonSchema.name,
+                schema: options.jsonSchema.schema,
+                strict: true,
+              },
+            }
+          : undefined,
       }),
     });
   } else if (protocol === "responses") {
-    const input = messages
-      .map((message) => `${message.role.toUpperCase()}:\n${message.content}`)
-      .join("\n\n");
     response = await fetch(joinUrl(config.baseUrl, "/v1/responses"), {
       method: "POST",
       headers: {
@@ -127,8 +293,25 @@ export async function completeChat(
       },
       body: JSON.stringify({
         model: config.model,
-        input,
+        input: messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        max_output_tokens: maxTokens,
         temperature,
+        stream: options?.stream || undefined,
+        tools: options?.webSearch ? [{ type: "web_search" }] : undefined,
+        max_tool_calls: options?.maxToolCalls,
+        text: options?.jsonSchema
+          ? {
+              format: {
+                type: "json_schema",
+                name: options.jsonSchema.name,
+                schema: options.jsonSchema.schema,
+                strict: true,
+              },
+            }
+          : undefined,
       }),
     });
   } else if (protocol === "messages") {
@@ -189,12 +372,18 @@ export async function completeChat(
   if (!response.ok) {
     throw new Error(`模型请求失败 ${response.status}: ${await readError(response)}`);
   }
+  reportProgress(options, { phase: "response_started" });
 
-  const data = (await response.json()) as unknown;
-  const text = extractTextFromUnknown(data).trim();
+  const contentType = response.headers.get("content-type") || "";
+  const text = (
+    options?.stream && contentType.includes("text/event-stream")
+      ? await readEventStreamText(response, options)
+      : extractTextFromUnknown((await response.json()) as unknown)
+  ).trim();
   if (!text) {
     throw new Error("模型返回为空");
   }
+  reportProgress(options, { phase: "completed" });
   return text;
 }
 
@@ -261,14 +450,48 @@ export function extractSvg(text: string): string {
     throw new Error("模型输出里没有 SVG");
   }
   let svg = match[0].trim();
-  if (!/viewBox=/i.test(svg)) {
+  const opening = svg.match(/^<svg\b[^>]*>/i)?.[0];
+  if (!opening) throw new Error("SVG 根元素无效");
+
+  const viewBox = readSvgAttribute(opening, "viewBox");
+  if (!viewBox) {
     svg = svg.replace(/<svg\b/i, '<svg viewBox="0 0 1280 720"');
+  } else if (!sameNumberList(viewBox, [0, 0, 1280, 720])) {
+    throw new Error("SVG viewBox 必须是 0 0 1280 720");
   }
-  if (!/\bwidth=/i.test(svg)) {
+
+  const width = readSvgAttribute(opening, "width");
+  if (!width) {
     svg = svg.replace(/<svg\b/i, '<svg width="1280"');
+  } else if (!sameSvgLength(width, 1280)) {
+    throw new Error("SVG width 必须是 1280");
   }
-  if (!/\bheight=/i.test(svg)) {
+
+  const height = readSvgAttribute(opening, "height");
+  if (!height) {
     svg = svg.replace(/<svg\b/i, '<svg height="720"');
+  } else if (!sameSvgLength(height, 720)) {
+    throw new Error("SVG height 必须是 720");
+  }
+
+  if (/<script\b/i.test(svg)) throw new Error("SVG 不允许包含 script");
+  if (/<image\b[^>]*(?:href|xlink:href)\s*=\s*["']https?:/i.test(svg)) {
+    throw new Error("SVG 不允许引用外部图片");
   }
   return svg;
+}
+
+function readSvgAttribute(opening: string, name: string): string | null {
+  const match = opening.match(new RegExp(`\\s${name}\\s*=\\s*["']([^"']+)["']`, "i"));
+  return match?.[1]?.trim() ?? null;
+}
+
+function sameNumberList(value: string, expected: number[]): boolean {
+  const values = value.trim().split(/[\s,]+/).map(Number);
+  return values.length === expected.length && values.every((item, index) => item === expected[index]);
+}
+
+function sameSvgLength(value: string, expected: number): boolean {
+  const normalized = value.trim().replace(/px$/i, "");
+  return normalized !== "" && Number(normalized) === expected;
 }

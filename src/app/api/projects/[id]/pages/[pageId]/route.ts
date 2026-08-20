@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { applyPageEdit } from "@/lib/pipeline";
 import { serializePage } from "@/lib/serialize";
-import { getPage } from "@/lib/store";
+import { getProjectPage } from "@/lib/store";
 
 export const runtime = "nodejs";
 
@@ -18,7 +18,7 @@ export async function PATCH(
   };
   try {
     await applyPageEdit(id, pageId, body);
-    return NextResponse.json(serializePage(getPage(pageId)));
+    return NextResponse.json(serializePage(getProjectPage(id, pageId)));
   } catch (error) {
     const message = error instanceof Error ? error.message : "更新失败";
     return NextResponse.json({ error: message }, { status: 400 });

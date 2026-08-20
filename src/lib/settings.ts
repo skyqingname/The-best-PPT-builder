@@ -1,5 +1,5 @@
 import { getDb } from "./db";
-import type { AppSettings, LlmProtocol, ModelConfig, SearchProvider } from "./types";
+import type { AppSettings, LlmProtocol, ModelConfig } from "./types";
 
 interface SettingsRow {
   text_base_url: string;
@@ -10,8 +10,10 @@ interface SettingsRow {
   svg_api_key: string;
   svg_protocol: string;
   svg_model: string;
-  search_provider: string;
+  search_base_url: string;
   search_api_key: string;
+  search_protocol: string;
+  search_model: string;
 }
 
 function rowToSettings(row: SettingsRow): AppSettings {
@@ -28,8 +30,12 @@ function rowToSettings(row: SettingsRow): AppSettings {
       protocol: row.svg_protocol as LlmProtocol,
       model: row.svg_model,
     },
-    searchProvider: row.search_provider as SearchProvider,
-    searchApiKey: row.search_api_key,
+    search: {
+      baseUrl: row.search_base_url,
+      apiKey: row.search_api_key,
+      protocol: row.search_protocol as LlmProtocol,
+      model: row.search_model,
+    },
   };
 }
 
@@ -52,8 +58,10 @@ export function saveSettings(settings: AppSettings): AppSettings {
         svg_api_key = @svg_api_key,
         svg_protocol = @svg_protocol,
         svg_model = @svg_model,
-        search_provider = @search_provider,
-        search_api_key = @search_api_key
+        search_base_url = @search_base_url,
+        search_api_key = @search_api_key,
+        search_protocol = @search_protocol,
+        search_model = @search_model
       WHERE id = 1`,
     )
     .run({
@@ -65,8 +73,10 @@ export function saveSettings(settings: AppSettings): AppSettings {
       svg_api_key: settings.svg.apiKey.trim(),
       svg_protocol: settings.svg.protocol,
       svg_model: settings.svg.model.trim(),
-      search_provider: settings.searchProvider,
-      search_api_key: settings.searchApiKey.trim(),
+      search_base_url: settings.search.baseUrl.trim(),
+      search_api_key: settings.search.apiKey.trim(),
+      search_protocol: settings.search.protocol,
+      search_model: settings.search.model.trim(),
     });
   return getSettings();
 }
@@ -87,10 +97,10 @@ export function requireSvgConfig(): ModelConfig {
   return settings.svg;
 }
 
-export function requireSearch(): { provider: SearchProvider; apiKey: string } {
+export function requireSearch(): ModelConfig {
   const settings = getSettings();
-  if (!settings.searchApiKey) {
-    throw new Error("先在设置里填写搜索 API Key");
+  if (!settings.search.baseUrl || !settings.search.apiKey || !settings.search.model) {
+    throw new Error("先在设置里配好搜索模型");
   }
-  return { provider: settings.searchProvider, apiKey: settings.searchApiKey };
+  return settings.search;
 }

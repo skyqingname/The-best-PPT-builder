@@ -20,11 +20,18 @@ export async function POST(request: Request) {
   }
   try {
     const settings = getSettings();
-    if (!settings.text.apiKey || !settings.text.model || !settings.svg.apiKey || !settings.svg.model) {
-      return NextResponse.json({ error: "先在设置里配好文本模型和 SVG 模型" }, { status: 400 });
-    }
-    if (!settings.searchApiKey) {
-      return NextResponse.json({ error: "先在设置里填写搜索 API Key" }, { status: 400 });
+    if (
+      !settings.text.baseUrl ||
+      !settings.text.apiKey ||
+      !settings.text.model ||
+      !settings.svg.baseUrl ||
+      !settings.svg.apiKey ||
+      !settings.svg.model ||
+      !settings.search.baseUrl ||
+      !settings.search.apiKey ||
+      !settings.search.model
+    ) {
+      return NextResponse.json({ error: "先在设置里配好文本、SVG 和搜索模型" }, { status: 400 });
     }
     const project = createProject(requestText);
     enqueuePipeline(project.id);

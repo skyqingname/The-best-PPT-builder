@@ -11,31 +11,10 @@ const PROTOCOLS: { id: LlmProtocol; label: string; hint: string }[] = [
   { id: "chat_completions", label: "Chat Completions", hint: "/v1/chat/completions" },
 ];
 
-const SEARCH_PROVIDERS: {
-  id: "tavily" | "bocha";
-  label: string;
-  homeUrl: string;
-  homeLabel: string;
-}[] = [
-  {
-    id: "tavily",
-    label: "Tavily",
-    homeUrl: "https://app.tavily.com/home",
-    homeLabel: "打开 Tavily 控制台",
-  },
-  {
-    id: "bocha",
-    label: "博查",
-    homeUrl: "https://open.bochaai.com/",
-    homeLabel: "打开博查开放平台",
-  },
-];
-
 const emptySettings: AppSettings = {
   text: { baseUrl: "", apiKey: "", protocol: "chat_completions", model: "" },
   svg: { baseUrl: "", apiKey: "", protocol: "chat_completions", model: "" },
-  searchProvider: "tavily",
-  searchApiKey: "",
+  search: { baseUrl: "", apiKey: "", protocol: "chat_completions", model: "" },
 };
 
 export default function SettingsScreen() {
@@ -43,6 +22,7 @@ export default function SettingsScreen() {
   const [settings, setSettings] = useState<AppSettings>(emptySettings);
   const [textModels, setTextModels] = useState<string[]>([]);
   const [svgModels, setSvgModels] = useState<string[]>([]);
+  const [searchModels, setSearchModels] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -54,7 +34,7 @@ export default function SettingsScreen() {
       });
   }, []);
 
-  async function pull(slot: "text" | "svg") {
+  async function pull(slot: "text" | "svg" | "search") {
     setMessage("");
     const config = settings[slot];
     const response = await fetch("/api/settings/models", {
@@ -72,11 +52,10 @@ export default function SettingsScreen() {
       return;
     }
     if (slot === "text") setTextModels(data.models ?? []);
-    else setSvgModels(data.models ?? []);
+    else if (slot === "svg") setSvgModels(data.models ?? []);
+    else setSearchModels(data.models ?? []);
     setMessage(`拉到 ${(data.models ?? []).length} 个模型`);
   }
-
-  const currentSearch = SEARCH_PROVIDERS.find((item) => item.id === settings.searchProvider);
 
   async function save() {
     setBusy(true);
@@ -106,7 +85,7 @@ export default function SettingsScreen() {
             </button>
             <h1 className="mt-2 text-[28px] font-semibold">模型与搜索</h1>
             <p className="mt-1 text-[13px] text-[#6e6e73]">
-              文本和 SVG 各用一把 Key。填完地址就能拉模型。Key 只存在本机。
+              文本、SVG、搜索各自独立配置。填完地址就能拉模型，Key 只存在本机。
             </p>
           </div>
           <button
@@ -134,54 +113,19 @@ export default function SettingsScreen() {
           onChange={(svg) => setSettings({ ...settings, svg })}
           onPull={() => void pull("svg")}
         />
-
-        <section className="mt-4 rounded-[20px] border border-[#e5e5e5] bg-white p-5">
-          <h2 className="text-[16px] font-semibold">搜索</h2>
-          <p className="mt-1 text-[12px] text-[#6e6e73]">只用一把 Key。先做 Tavily 和博查。</p>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <div>
-              <div className="mb-1 flex items-center justify-between text-[12px] text-[#6e6e73]">
-                <span>供应商</span>
-                {currentSearch && (
-                  <a
-                    href={currentSearch.homeUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[#0b84ff] hover:underline"
-                  >
-                    {currentSearch.homeLabel}
-                  </a>
-                )}
-              </div>
-              <select
-                className="w-full rounded-[12px] border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[14px] text-[#1d1d1f]"
-                value={settings.searchProvider}
-                onChange={(event) =>
-                  setSettings({
-                    ...settings,
-                    searchProvider: event.target.value as "tavily" | "bocha",
-                  })
-                }
-              >
-                {SEARCH_PROVIDERS.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <label className="block text-[12px] text-[#6e6e73]">
-              API Key
-              <input
-                className="mt-1 w-full rounded-[12px] border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[14px]"
-                value={settings.searchApiKey}
-                onChange={(event) =>
-                  setSettings({ ...settings, searchApiKey: event.target.value })
-                }
-              />
-            </label>
-          </div>
-        </section>
+        <ModelCard
+          title="搜索模型"
+          hint="背景调研与逐页资料检索；请选择具备联网能力的模型"
+          value={settings.search}
+          models={searchModels}
+          onChange={(search) => setSettings({ ...settings, search })}
+          onPull={() => void pull("search")}
+          notice={
+            /grok/i.test(settings.search.model) && settings.search.protocol !== "responses"
+              ? "Grok 联网搜索必须选择 OpenAI Responses 协议"
+              : undefined
+          }
+        />
 
         {message && <p className="mt-4 text-[13px] text-[#0b84ff]">{message}</p>}
       </div>
@@ -196,6 +140,7 @@ function ModelCard({
   models,
   onChange,
   onPull,
+  notice,
 }: {
   title: string;
   hint: string;
@@ -203,11 +148,17 @@ function ModelCard({
   models: string[];
   onChange: (value: AppSettings["text"]) => void;
   onPull: () => void;
+  notice?: string;
 }) {
   return (
     <section className="mb-4 rounded-[20px] border border-[#e5e5e5] bg-white p-5">
       <h2 className="text-[16px] font-semibold">{title}</h2>
       <p className="mt-1 text-[12px] text-[#6e6e73]">{hint}</p>
+      {notice && (
+        <p className="mt-2 rounded-[10px] bg-[#fff4e5] px-3 py-2 text-[12px] text-[#9a5b00]">
+          {notice}
+        </p>
+      )}
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         <Field
           label="Base URL"
@@ -218,6 +169,7 @@ function ModelCard({
         <Field
           label="API Key"
           value={value.apiKey}
+          type="password"
           onChange={(apiKey) => onChange({ ...value, apiKey })}
         />
         <label className="block text-[12px] text-[#6e6e73]">
@@ -274,17 +226,21 @@ function Field({
   value,
   onChange,
   placeholder,
+  type = "text",
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  type?: "text" | "password";
 }) {
   return (
     <label className="block text-[12px] text-[#6e6e73]">
       {label}
       <input
         className="mt-1 w-full rounded-[12px] border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[14px] text-[#1d1d1f]"
+        type={type}
+        autoComplete={type === "password" ? "off" : undefined}
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}

@@ -1,5 +1,7 @@
 node_modules
 .next
+.playwright-cli
+output/playwright
 out
 data/*
 !data/.gitkeep

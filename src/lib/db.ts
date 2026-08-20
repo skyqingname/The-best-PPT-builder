@@ -30,8 +30,10 @@ function migrate(db: Database.Database) {
       svg_api_key TEXT NOT NULL DEFAULT '',
       svg_protocol TEXT NOT NULL DEFAULT 'chat_completions',
       svg_model TEXT NOT NULL DEFAULT '',
-      search_provider TEXT NOT NULL DEFAULT 'tavily',
-      search_api_key TEXT NOT NULL DEFAULT ''
+      search_base_url TEXT NOT NULL DEFAULT '',
+      search_api_key TEXT NOT NULL DEFAULT '',
+      search_protocol TEXT NOT NULL DEFAULT 'chat_completions',
+      search_model TEXT NOT NULL DEFAULT ''
     );
 
     INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -91,6 +93,37 @@ function migrate(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_pages_project ON pages(project_id, sort_order);
     CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, created_at);
   `);
+
+  migrateSearchModelSettings(db);
+}
+
+function migrateSearchModelSettings(db: Database.Database) {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(settings)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  const additions = [
+    ["search_base_url", "TEXT NOT NULL DEFAULT ''"],
+    ["search_api_key", "TEXT NOT NULL DEFAULT ''"],
+    ["search_protocol", "TEXT NOT NULL DEFAULT 'chat_completions'"],
+    ["search_model", "TEXT NOT NULL DEFAULT ''"],
+  ] as const;
+
+  for (const [name, definition] of additions) {
+    if (!columns.has(name)) {
+      db.exec(`ALTER TABLE settings ADD COLUMN ${name} ${definition}`);
+      columns.add(name);
+    }
+  }
+
+  if (columns.has("search_provider")) {
+    db.exec(`
+      UPDATE settings
+      SET search_base_url = search_provider
+      WHERE search_base_url = '' AND search_provider NOT IN ('tavily', 'bocha')
+    `);
+  }
 }
 
 export function nowIso(): string {

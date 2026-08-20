@@ -4,6 +4,11 @@ import type { EventRow, PageRow, ProjectRow } from "./types";
 
 export function serializeProject(project: ProjectRow, pages: PageRow[], events: EventRow[] = []) {
   const assumptions = parseAssumptions(project);
+  const researchSources = JSON.parse(project.init_sources_json || "[]") as Array<{
+    title: string;
+    url: string;
+    snippet?: string;
+  }>;
   return {
     id: project.id,
     title: project.title,
@@ -14,6 +19,12 @@ export function serializeProject(project: ProjectRow, pages: PageRow[], events: 
     style: getStylePack(project.style_id),
     styles: STYLE_PACKS,
     assumptions,
+    requirementsReady: assumptions.questions.length > 0,
+    researchSources: researchSources.map((source) => ({
+      title: source.title,
+      url: source.url,
+      snippet: source.snippet,
+    })),
     outlineReady: Boolean(project.outline_json),
     errorText: project.error_text,
     createdAt: project.created_at,

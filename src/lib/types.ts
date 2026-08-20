@@ -4,10 +4,9 @@ export type LlmProtocol =
   | "gemini"
   | "chat_completions";
 
-export type SearchProvider = "tavily" | "bocha";
-
 export type ProjectStage =
   | "init"
+  | "requirements"
   | "outline"
   | "research"
   | "draft"
@@ -24,7 +23,7 @@ export type ArtifactStatus =
   | "stale"
   | "failed";
 
-export type ModelSlot = "text" | "svg";
+export type ModelSlot = "text" | "svg" | "search";
 
 export interface ModelConfig {
   baseUrl: string;
@@ -36,8 +35,7 @@ export interface ModelConfig {
 export interface AppSettings {
   text: ModelConfig;
   svg: ModelConfig;
-  searchProvider: SearchProvider;
-  searchApiKey: string;
+  search: ModelConfig;
 }
 
 export interface AssumptionQuestion {
@@ -45,6 +43,7 @@ export interface AssumptionQuestion {
   label: string;
   value: string;
   reason: string;
+  options: string[];
 }
 
 export interface ProjectAssumptions {
